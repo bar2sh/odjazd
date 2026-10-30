@@ -1,26 +1,35 @@
 //! The animation in the README, `docs/tui.svg`: the live board as the app itself draws it,
-//! from the downloaded Warsaw timetable. Each frame is drawn on a test terminal and becomes
-//! SVG, and CSS steps from frame to frame, so GitHub plays it without scripts. After
-//! `odjazd update`, regenerate it with
+//! from the downloaded Warsaw timetable and where the vehicles really were. Each frame is
+//! drawn on a test terminal and becomes SVG, and CSS steps from frame to frame, so GitHub
+//! plays it without scripts. At a busy hour, after `odjazd update`, regenerate it with
 //!
 //! ```sh
 //! cargo test -p odjazd --release -- --ignored --nocapture readme_animation
 //! ```
 //!
-//! The film keeps a clock of its own: rush hour on a weekday morning, ticking in real time
-//! while a stop is looked up, then fast-forwarding so departures count down and leave.
+//! That takes three minutes. First the test does the background thread's work for real:
+//! it reads the timetable, then downloads the vehicle positions every 15 seconds, as the
+//! app would. Then it plays the user on a clock of its own: a stop is looked up and its
+//! board watched in real time, then fast-forwarded so departures count down and leave,
+//! with each download coming in when it really did. With `ODJAZD_FILM_OFFLINE=1`, it
+//! films the next weekday's rush hour from the timetable alone instead.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    env,
     fmt::Write as _,
     fs,
-    sync::mpsc::{self, Receiver},
-    time::Instant,
+    sync::{Arc, mpsc},
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
-use jiff::{SignedDuration, Zoned, civil::Weekday};
-use odjazd_core::{Feed, StopGroup};
+use jiff::{SignedDuration, Timestamp, Zoned, civil::Weekday};
+use odjazd_core::{
+    Feed, Timetable,
+    realtime::{Positions, Realtime},
+};
 use ratatui::{
     Terminal,
     backend::TestBackend,
@@ -30,7 +39,11 @@ use ratatui::{
     style::{Color, Modifier},
 };
 
-use super::{Answer, App, LIMIT, WIDTH};
+use super::{App, FOLLOW, News, WIDTH};
+use crate::live;
+
+/// The vehicles are followed for a little longer than the film lasts on its own clock.
+const RECORDING: Duration = Duration::from_secs(3 * 60);
 
 /// Height of the terminal the film is shot on; it is as wide as the board gets.
 const ROWS: u16 = 16;
@@ -51,12 +64,35 @@ const DIM: [u8; 3] = [0x7d, 0x85, 0x90];
 fn readme_animation() -> Result<()> {
     let feed = Feed::open(crate::data_dir()?.join("feed"))?;
     let groups = feed.stop_groups();
-    let (requests, inbox) = mpsc::channel();
+    let offline = env::var_os("ODJAZD_FILM_OFFLINE").is_some();
+    let start = if offline {
+        rush_hour(&feed)?
+    } else {
+        Zoned::now().with_time_zone(feed.timezone().clone())
+    };
+
+    // The background thread's work, done for real and noted down with when it was done.
+    let reading = Instant::now();
+    let timetable = Arc::new(Timetable::build(&feed, start.date())?);
+    let took = SignedDuration::try_from(reading.elapsed())?;
+    let read = start.timestamp() + took;
+    let mut news = VecDeque::from([(read, News::Timetable(Arc::clone(&timetable)))]);
+    let mut downloads = 0;
+    if !offline {
+        println!("following the vehicles for {} s…", RECORDING.as_secs());
+        let mut realtime = Realtime::default();
+        for (came, positions) in record(RECORDING)? {
+            realtime = timetable.track(positions, &realtime);
+            news.push_back((came, News::Live(Ok(realtime.clone()))));
+            downloads += 1;
+        }
+    }
+
+    let (refresh, _) = mpsc::channel();
     let mut film = Film {
-        feed: &feed,
-        app: App::new(&feed, &groups, requests),
-        inbox,
-        now: rush_hour(&feed)?,
+        app: App::new(&feed, &groups, refresh, offline),
+        news,
+        now: start,
         shots: Vec::new(),
     };
 
@@ -68,43 +104,50 @@ fn readme_animation() -> Result<()> {
     }
     film.wait(1000);
 
-    // Enter opens the board. It waits for the timetable as long as reading it really takes.
+    // Enter opens the board: in real time, then faster and faster.
     film.app.key(KeyCode::Enter.into());
-    let group = film.inbox.try_recv()?;
-    let asked = film.now.clone();
-    let reading = Instant::now();
-    let departures = feed.departures(&group.stops, &asked, LIMIT)?;
-    let took = i64::try_from(reading.elapsed().as_millis())?;
-    film.wait((took + 50) / 100 * 100);
-    film.app.receive(Answer {
-        group,
-        at: asked.timestamp(),
-        departures: Ok(departures),
-    });
-
-    // The board in real time, then faster and faster.
     film.wait(1500);
     let still = film.shots.len() - 1;
     film.wait(3500);
     for (steps, millis, passes) in [(3, 300, 1), (3, 200, 2), (30, 200, 5)] {
         for _ in 0..steps {
-            film.fast_forward(millis, SignedDuration::from_secs(passes))?;
+            film.shoot(millis, SignedDuration::from_secs(passes));
         }
     }
     film.wait(2500);
 
-    let label = "odjazd with no stop: a stop search, then the live board of Centrum in Warsaw, \
-        counting down to each departure";
-    let svg = svg(&film.shots, still, label);
+    let live = if offline { "" } else { ", with live delays" };
+    let label = format!(
+        "odjazd with no stop: a stop search, then the live board of Centrum in Warsaw, \
+        counting down to each departure{live}"
+    );
+    let svg = svg(&film.shots, still, &label);
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/tui.svg");
     fs::write(path, &svg)?;
     println!(
-        "wrote docs/tui.svg: {} frames, {:.1} s, {} kB; the timetable took {took} ms",
+        "wrote docs/tui.svg: {} frames, {:.1} s, {} kB; the timetable took {} ms, \
+        then {downloads} downloads of the vehicle positions",
         film.shots.len(),
         film.shots.iter().map(|shot| shot.millis).sum::<i64>() as f64 / 1000.0,
         svg.len() / 1000,
+        took.as_millis(),
     );
     Ok(())
+}
+
+/// Downloads the vehicle positions as the app does, waiting `FOLLOW` after each download,
+/// for `length`. Each comes with when it came in.
+fn record(length: Duration) -> Result<Vec<(Timestamp, Positions)>> {
+    let start = Instant::now();
+    let mut recorded = Vec::new();
+    loop {
+        let positions = live::positions()?;
+        recorded.push((Timestamp::now(), positions));
+        if start.elapsed() + FOLLOW > length {
+            return Ok(recorded);
+        }
+        thread::sleep(FOLLOW);
+    }
 }
 
 /// 8:14:52 this morning, or on the next weekday: the board at its busiest.
@@ -117,12 +160,12 @@ fn rush_hour(feed: &Feed) -> Result<Zoned> {
     Ok(day.at(8, 14, 52, 0).to_zoned(zone)?)
 }
 
-/// Plays the user at the keyboard and the worker thread, on a clock of its own, and keeps
-/// every frame the app draws.
+/// Plays the user at the keyboard and the background thread, on a clock of its own, and
+/// keeps every frame the app draws.
 struct Film<'f> {
-    feed: &'f Feed,
     app: App<'f>,
-    inbox: Receiver<&'f StopGroup>,
+    /// What the background thread found out, and when, still to reach the app.
+    news: VecDeque<(Timestamp, News)>,
     now: Zoned,
     shots: Vec<Shot>,
 }
@@ -146,25 +189,13 @@ impl Film<'_> {
         }
     }
 
-    /// Lets `passes` go by in `millis`. At that speed a refresh takes no time at all, so
-    /// the board's queries are answered at once.
-    fn fast_forward(&mut self, millis: i64, passes: SignedDuration) -> Result<()> {
-        self.app.refresh_if_stale(&self.now);
-        while let Ok(group) = self.inbox.try_recv() {
-            let departures = self.feed.departures(&group.stops, &self.now, LIMIT)?;
-            self.app.receive(Answer {
-                group,
-                at: self.now.timestamp(),
-                departures: Ok(departures),
-            });
-        }
-        self.shoot(millis, passes);
-        Ok(())
-    }
-
-    /// Draws the app as it is now, keeps the frame up for `millis` and moves the clock on
-    /// by `passes`.
+    /// Draws the app as it is now, with the news that has come in by then, keeps the frame
+    /// up for `millis` and moves the clock on by `passes`.
     fn shoot(&mut self, millis: i64, passes: SignedDuration) {
+        let now = self.now.timestamp();
+        while let Some((_, news)) = self.news.pop_front_if(|(came, _)| *came <= now) {
+            self.app.receive(news);
+        }
         let mut terminal = Terminal::new(TestBackend::new(WIDTH, ROWS)).unwrap();
         terminal
             .draw(|frame| self.app.draw(frame, &self.now))

@@ -27,7 +27,12 @@ pub fn update(url: &str, feed_dir: &Path) -> Result<()> {
 }
 
 fn download(url: &str, to: &Path) -> Result<()> {
-    let mut response = ureq::get(url)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .user_agent(crate::USER_AGENT)
+        .build()
+        .into();
+    let mut response = agent
+        .get(url)
         .call()
         .with_context(|| format!("cannot download {url}"))?;
     let total = response

@@ -21,7 +21,7 @@
 ## Highlights
 
 - **A live board.** Run `odjazd` on its own, type a stop's name and keep its departures
-  on screen, counting down by the second and refreshing themselves.
+  on screen, counting down by the second to when each bus and tram will really come.
 - **Forgiving stop search.** `plac narutowicza`, `pl narutowicza` and `narutowica` all
   find *Pl. Narutowicza*; Polish letters are optional.
 - **Whole stops, not single poles.** All poles of a stop are shown together, and a metro
@@ -35,8 +35,9 @@
 - **Live delays.** The city publishes where every bus and tram is, but not how late it
   runs. odjazd works that out from each vehicle's GPS position, and leaves out a vehicle
   that has already passed your stop.
-- **Which pole to walk to.** In the web app, set Home and Work: odjazd plans a journey from
-  every pole within walking distance and tells you where to go and when to leave.
+- **Which pole to walk to.** `odjazd route` plans a journey from every pole within walking
+  distance, live delays included, and tells you where to go and when to leave. In the web
+  app, set Home and Work and the plans are one tap away.
 - **One small binary.** No runtime, no account, no API key.
 
 ## Install
@@ -54,10 +55,12 @@ cache directory.
 
 ```bash
 odjazd                            # the live board: find a stop as you type
-odjazd centrum --live             # the live board of one stop
+odjazd centrum --watch            # the live board of one stop
 odjazd "dworzec centralny"        # the next 12 departures, printed once
 odjazd politechnika -n 5          # just 5 of them
-odjazd centrum --at 23:50         # what still runs late tonight
+odjazd centrum --at 23:50         # what still runs late tonight, by the timetable
+odjazd centrum --offline          # the timetable alone, without live delays
+odjazd route centrum wilenski     # the quickest ways from one stop to another
 odjazd stops narutowicza          # which stops match, with their poles
 odjazd update                     # download a fresh timetable
 odjazd update --url <gtfs.zip>    # ...or another city's GTFS feed
@@ -70,12 +73,36 @@ odjazd update --url <gtfs.zip>    # ...or another city's GTFS feed
 </p>
 
 Type to search, pick a stop with the arrow keys and press Enter. Its departures stay on
-screen, counting down by the second; the ones about to leave turn amber, and the board
-asks the timetable again every 30 seconds. Tab moves on to the next matching stop, Esc
-goes back to the search and `q` quits.
+screen, counting down by the second. Every 15 seconds the board finds out where the buses
+and trams are, and shows how late each one runs (`+2`, or a green `●` when on time) and
+how many stops away it is; the ones about to leave turn amber. `r` asks for the vehicles
+at once, Tab moves on to the next matching stop, Esc goes back to the search and `q`
+quits.
 
-The animation is the app itself: its own drawing code, run on the real timetable at rush
-hour on a test terminal, sped up in the second half.
+The animation is the app itself: its own drawing code, run on the real timetable and
+three minutes of real vehicle positions on a test terminal, sped up in the second half.
+
+### Journeys
+
+```console
+$ odjazd route "plac narutowicza" "dworzec wilenski" --at 8:15
+Pl. Narutowicza → Dw. Wileński  Fri 30 Oct, 08:15
+
+08:17 → 08:43  26 min, 1 change
+  08:17  walk to Pl. Narutowicza 07
+  08:18   1    Żerań Wschodni  3 stops to Rondo Daszyńskiego 06, 08:25
+  08:25  walk 3 min to Rondo Daszyńskiego
+  08:31   M2   Bródno          6 stops to Dworzec Wileński, 08:43
+
+08:17 → 08:45  28 min, no changes
+  08:17  walk to Pl. Narutowicza 12
+  08:18   25   Annopol         14 stops to Dw. Wileński 08, 08:45
+```
+
+Each way starts at a different pole, so the first line says which one to walk to. Without
+`--at`, the times count live delays in: a late tram can make the bus across the street the
+better choice. Ways that would set off no later yet get there later, with no fewer
+changes, are left out.
 
 ### Where the timetable lives
 
@@ -160,14 +187,15 @@ A few details make this harder than it looks:
 - **Speed.** Most of the 8 million rows belong to other days. Trips are looked up once
   per trip rather than once per row, so those rows are skipped after a single comparison.
   Trimming whitespace in every CSV field took two thirds of the run time, so only the
-  fields in use are trimmed. A query takes about 0.75 s on an Apple M-series laptop.
+  fields in use are trimmed. A board takes about a second on an Apple M-series laptop,
+  while the vehicle positions download alongside.
 
 The code is split into three crates:
 
 | Crate | What it does |
 |---|---|
 | [`odjazd-core`](crates/odjazd-core) | GTFS and GTFS-Realtime parsing, stop search, departures, live delays, journey planning. No networking or terminal I/O, so it can be compiled to WebAssembly. |
-| [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours, and the live board. |
+| [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours, journeys and the live board. |
 | [`odjazd-web`](crates/odjazd-web) | The web app and its JSON API: keeps the timetable fresh, follows vehicle positions, serves the PWA. |
 
 Built with [clap](https://crates.io/crates/clap), [csv](https://crates.io/crates/csv) +
@@ -189,11 +217,11 @@ The tests run against tiny hand-written feeds:
 [`mini`](crates/odjazd-core/tests/fixtures/mini) covers each tricky case above, and
 [`commute`](crates/odjazd-core/tests/fixtures/commute) a trip to work where a late tram
 changes which pole to walk to. Both animations come from real output, after `odjazd
-update`:
+update` and at a busy hour, since they show where the vehicles are:
 
 ```bash
 cargo build --release && python3 docs/demo.py swietokrzyska
-cargo test -p odjazd --release -- --ignored readme_animation   # docs/tui.svg
+cargo test -p odjazd --release -- --ignored readme_animation   # docs/tui.svg, 3 minutes
 ```
 
 ## Data

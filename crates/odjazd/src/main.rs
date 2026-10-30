@@ -1,5 +1,6 @@
 use std::{
     env,
+    io::{self, IsTerminal},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -11,6 +12,7 @@ use odjazd_core::{Feed, search};
 
 mod download;
 mod render;
+mod tui;
 
 /// Warsaw's timetable: ZTM Warszawa data, converted to GTFS by Mikołaj Kuranowski.
 const WARSAW_FEED: &str = "https://mkuran.pl/gtfs/warsaw.zip";
@@ -46,8 +48,13 @@ enum Command {
 
 #[derive(Args)]
 struct BoardArgs {
-    /// Stop name. Typos, missing Polish letters and "plac" for "Pl." are fine
+    /// Stop name. Typos, missing Polish letters and "plac" for "Pl." are fine.
+    /// Leave it out to search for one on the live board
     stop: Option<String>,
+
+    /// Keep the board open, counting down and refreshing itself
+    #[arg(short, long, conflicts_with = "at")]
+    live: bool,
 
     /// How many departures to show
     #[arg(short = 'n', long, default_value_t = 12)]
@@ -64,10 +71,15 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Command::Update { url }) => download::update(&url, &feed_dir),
         Some(Command::Stops { query }) => list_stops(&open(&feed_dir)?, &query),
-        None => match &cli.board.stop {
-            Some(stop) => show_board(&open(&feed_dir)?, stop, &cli.board),
-            None => Ok(Cli::command().print_help()?),
-        },
+        None => {
+            let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+            match &cli.board.stop {
+                Some(stop) if !cli.board.live => show_board(&open(&feed_dir)?, stop, &cli.board),
+                stop if interactive => tui::run(&open(&feed_dir)?, stop.as_deref()),
+                Some(_) => bail!("the live board needs a terminal; leave out --live"),
+                None => Ok(Cli::command().print_help()?),
+            }
+        }
     }
 }
 

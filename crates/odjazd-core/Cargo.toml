@@ -1,6 +1,6 @@
 [package]
 name = "odjazd-core"
-description = "GTFS timetable loading, stop search and departure queries behind the odjazd CLI"
+description = "GTFS and GTFS-Realtime engine behind odjazd: stop search, departure boards with live delays, journey planning"
 keywords = ["gtfs", "transit", "timetable", "warsaw"]
 categories = ["parser-implementations"]
 version.workspace = true
@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 csv = "1.4.0"
 jiff = "0.2.38"
+prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 strsim = "0.11.1"
 thiserror = "2.0.21"
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }

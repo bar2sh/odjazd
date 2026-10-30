@@ -1,0 +1,3 @@
+route_id,agency_id,route_short_name,route_long_name,route_type,route_color,route_text_color
+1,0,1,Zajezdnia – Praca,0,B60000,FFFFFF
+100,0,100,Dom – Praca,3,880077,FFFFFF

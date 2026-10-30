@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>odjazd</title>
+  <meta name="description" content="Najbliższe przystanki i odjazdy w Warszawie na żywo. Podpowiada, na który słupek iść, żeby najszybciej dojechać do domu albo do pracy.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f8fa" media="(prefers-color-scheme: light)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="odjazd">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="chrome">
+    <header class="top">
+      <a class="brand" href="/" aria-label="odjazd, strona główna"><span>odjazd</span></a>
+      <div class="top-pills">
+        <span id="live" class="pill pill--live" hidden><span class="dot"></span>na żywo</span>
+        <button id="gps" class="pill pill--gps" type="button">szukam GPS…</button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="Widok">
+      <button role="tab" type="button" data-view="nearby" aria-selected="true">W pobliżu</button>
+      <button role="tab" type="button" data-view="home" aria-selected="false">Dom</button>
+      <button role="tab" type="button" data-view="work" aria-selected="false">Praca</button>
+    </nav>
+  </div>
+
+  <div class="layout">
+    <section class="map-wrap" id="map-wrap" aria-label="Mapa">
+      <div id="map"></div>
+      <div class="map-tools">
+        <button id="map-me" class="map-btn" type="button" aria-label="Pokaż moją pozycję" title="Pokaż moją pozycję">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7"/></svg>
+        </button>
+        <button id="map-size" class="map-btn" type="button" aria-label="Powiększ mapę" title="Powiększ mapę" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
+      </div>
+      <div id="pick" class="pick" hidden>
+        <span id="pick-text">Dotknij mapy</span>
+        <button id="pick-cancel" type="button">Anuluj</button>
+      </div>
+    </section>
+
+    <main id="content" class="content" role="tabpanel"></main>
+  </div>
+
+  <footer class="credits" id="credits">
+    <p>
+      Rozkład: <a href="https://ztm.waw.pl" rel="noopener">Zarząd Transportu Miejskiego w&nbsp;Warszawie</a>,
+      w GTFS od <a href="https://mkuran.pl/gtfs/" rel="noopener">Mikołaja Kuranowskiego</a>.
+      Pozycje pojazdów: Miasto Stołeczne Warszawa, <a href="http://api.um.warszawa.pl" rel="noopener">api.um.warszawa.pl</a>,
+      pobrane <span class="rt-time">—</span>.
+      Mapa: © <a href="https://www.openstreetmap.org/copyright" rel="noopener">OpenStreetMap</a> contributors.
+    </p>
+    <button id="about-open" class="link" type="button">O danych i aplikacji</button>
+  </footer>
+
+  <dialog id="dest-sheet" class="sheet" aria-labelledby="dest-title">
+    <form method="dialog" class="sheet-body">
+      <header class="sheet-head">
+        <h2 id="dest-title">Gdzie jest dom?</h2>
+        <button class="icon-btn" value="close" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <p id="dest-current" class="muted" hidden></p>
+      <div class="sheet-actions">
+        <button type="button" class="choice" data-act="here">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>
+          <span>Tutaj, gdzie jestem</span>
+        </button>
+        <button type="button" class="choice" data-act="map">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5z"/><path d="M9 4v13.5M15 6.5V20"/></svg>
+          <span>Wskaż na mapie</span>
+        </button>
+      </div>
+      <label class="search">
+        <span>…albo znajdź przystanek</span>
+        <input id="dest-q" type="search" placeholder="np. Pl. Narutowicza" autocomplete="off" enterkeyhint="search">
+      </label>
+      <ul id="dest-results" class="results"></ul>
+      <footer class="sheet-foot">
+        <button type="button" class="danger" data-act="remove" hidden>Usuń</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="about-sheet" class="sheet" aria-labelledby="about-title">
+    <form method="dialog" class="sheet-body">
+      <header class="sheet-head">
+        <h2 id="about-title">O danych i aplikacji</h2>
+        <button class="icon-btn" value="close" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <p><b>odjazd</b> pokazuje słupki przystanków najbliżej Ciebie i odjazdy z nich, z opóźnieniami
+        liczonymi na żywo z pozycji GPS pojazdów. W zakładkach Dom i Praca podpowiada, na który słupek iść,
+        żeby najszybciej dojechać.</p>
+      <dl class="facts">
+        <dt>Rozkład</dt>
+        <dd>Zarząd Transportu Miejskiego w Warszawie (<a href="https://ztm.waw.pl" rel="noopener">ztm.waw.pl</a>),
+          w formacie GTFS od Mikołaja Kuranowskiego (<a href="https://mkuran.pl/gtfs/" rel="noopener">mkuran.pl/gtfs</a>).
+          <span id="about-version"></span></dd>
+        <dt>Pozycje pojazdów</dt>
+        <dd>Miasto Stołeczne Warszawa, <a href="http://api.um.warszawa.pl" rel="noopener">api.um.warszawa.pl</a>.
+          Pobrane <span class="rt-time">—</span><span id="about-vehicles"></span>.</dd>
+        <dt>Mapa</dt>
+        <dd>© <a href="https://www.openstreetmap.org/copyright" rel="noopener">OpenStreetMap</a> contributors,
+          kafelki z <a href="https://tile.openstreetmap.org" rel="noopener">tile.openstreetmap.org</a>.</dd>
+        <dt>Kod</dt>
+        <dd><a href="https://github.com/bar2sh/odjazd" rel="noopener">github.com/bar2sh/odjazd</a> (MIT)</dd>
+      </dl>
+      <p class="muted">Opóźnienia są szacowane z pozycji pojazdu na trasie, więc mogą się różnić od tablic na przystankach.
+        Godziny metra oznaczone „~” wynikają z częstotliwości kursowania, nie z rozkładu.</p>
+    </form>
+  </dialog>
+</body>
+</html>

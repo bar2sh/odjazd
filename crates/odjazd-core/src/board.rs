@@ -94,7 +94,7 @@ impl Feed {
     }
 
     /// Trips that run on at least one of `days`, and an index from their ids.
-    fn running_trips(
+    pub(crate) fn running_trips(
         &self,
         days: &[Date],
     ) -> Result<(HashMap<String, usize>, Vec<Trip<'_>>), Error> {
@@ -217,12 +217,12 @@ impl Feed {
 }
 
 /// A trip running on at least one of the service days a query looks at.
-struct Trip<'f> {
-    route: usize,
-    headsign: String,
+pub(crate) struct Trip<'f> {
+    pub(crate) route: usize,
+    pub(crate) headsign: String,
     /// Bit `i` is set when the trip runs on service day `i` of the query.
-    days: u8,
-    frequencies: Option<&'f [Frequency]>,
+    pub(crate) days: u8,
+    pub(crate) frequencies: Option<&'f [Frequency]>,
     /// Filled in while streaming `stop_times.txt`: the first stop, and the last
     /// `stop_sequence` at a stop other than the ones asked about.
     first: Option<First>,

@@ -5,21 +5,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use odjazd_core::Feed;
-
-/// The tables odjazd reads; the rest of the archive (shapes, fares) is skipped.
-const TABLES: &[&str] = &[
-    "agency.txt",
-    "stops.txt",
-    "routes.txt",
-    "trips.txt",
-    "stop_times.txt",
-    "calendar.txt",
-    "calendar_dates.txt",
-    "frequencies.txt",
-    "feed_info.txt",
-    "attributions.txt",
-];
 
 /// Downloads the GTFS archive at `url` and unpacks it into `feed_dir`. The previous
 /// timetable is replaced only once the new one is unpacked and opens fine.
@@ -32,15 +17,11 @@ pub fn update(url: &str, feed_dir: &Path) -> Result<()> {
 
     let archive = data_dir.join("feed.zip.part");
     download(url, &archive)?;
-    let staging = data_dir.join("feed.new");
-    unpack(&archive, &staging)?;
+    eprintln!("Unpacking…");
+    let installed =
+        odjazd_core::install(&archive, feed_dir).context("the download is not a usable GTFS feed");
     fs::remove_file(&archive)?;
-    Feed::open(&staging).context("the download is not a usable GTFS feed")?;
-
-    if feed_dir.exists() {
-        fs::remove_dir_all(feed_dir)?;
-    }
-    fs::rename(&staging, feed_dir)?;
+    installed?;
     eprintln!("Timetable saved in {}", feed_dir.display());
     Ok(())
 }
@@ -63,26 +44,6 @@ fn download(url: &str, to: &Path) -> Result<()> {
     eprint!("Downloading timetable…");
     io::copy(&mut body, &mut file).with_context(|| format!("download from {url} broke off"))?;
     eprintln!(" done ({:.0} MB)", body.read as f64 / 1e6);
-    Ok(())
-}
-
-fn unpack(archive: &Path, dir: &Path) -> Result<()> {
-    eprintln!("Unpacking…");
-    if dir.exists() {
-        fs::remove_dir_all(dir)?;
-    }
-    fs::create_dir_all(dir)?;
-    let mut zip =
-        zip::ZipArchive::new(File::open(archive)?).context("the download is not a zip file")?;
-    for &table in TABLES {
-        let mut entry = match zip.by_name(table) {
-            Ok(entry) => entry,
-            Err(zip::result::ZipError::FileNotFound) => continue,
-            Err(err) => return Err(err).with_context(|| format!("cannot unpack {table}")),
-        };
-        let mut out = File::create(dir.join(table))?;
-        io::copy(&mut entry, &mut out).with_context(|| format!("cannot unpack {table}"))?;
-    }
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use std::{
 use jiff::{civil::Date, tz::TimeZone};
 use serde::{Deserialize, de::DeserializeOwned};
 
-use crate::{Error, GtfsTime, calendar::Calendar, error::invalid};
+use crate::{Error, GtfsTime, LatLon, calendar::Calendar, error::invalid};
 
 /// Position of a stop in [`Feed::stops`].
 pub type StopIdx = usize;
@@ -22,8 +22,17 @@ pub struct Stop {
     /// Town (a non-standard column of the Warsaw feed), used to tell apart two different
     /// stops called "Centrum".
     pub town: Option<String>,
+    /// Street the pole stands on (another Warsaw-only column), which tells apart poles
+    /// on either side of a junction.
+    pub street: Option<String>,
     pub lat: f64,
     pub lon: f64,
+}
+
+impl Stop {
+    pub fn position(&self) -> LatLon {
+        LatLon::new(self.lat, self.lon)
+    }
 }
 
 /// A line, e.g. tram `15` or metro `M1`.
@@ -32,9 +41,32 @@ pub struct Route {
     pub id: String,
     /// The name riders know the line by.
     pub name: String,
+    pub kind: RouteKind,
     /// Brand colour and matching text colour (RGB), when the feed has them.
     pub color: Option<[u8; 3]>,
     pub text_color: Option<[u8; 3]>,
+}
+
+/// What runs on a line, from GTFS `route_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RouteKind {
+    Metro,
+    Tram,
+    Rail,
+    Bus,
+    Other,
+}
+
+impl RouteKind {
+    fn from_gtfs(route_type: Option<u16>) -> Self {
+        match route_type {
+            Some(0 | 5 | 900..=999) => Self::Tram,
+            Some(1 | 400..=499) => Self::Metro,
+            Some(2 | 100..=199) => Self::Rail,
+            Some(3 | 11 | 200..=299 | 700..=899) => Self::Bus,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// "Every `headway` seconds between `start` and `end`" for one trip (`frequencies.txt`).
@@ -60,6 +92,7 @@ pub struct Feed {
     pub(crate) route_index: HashMap<String, usize>,
     pub(crate) calendar: Calendar,
     pub(crate) frequencies: HashMap<String, Vec<Frequency>>,
+    version: Option<String>,
 }
 
 impl Feed {
@@ -78,6 +111,7 @@ impl Feed {
             routes,
             calendar: read_calendar(&dir)?,
             frequencies: read_frequencies(&dir)?,
+            version: read_version(&dir)?,
             dir,
         })
     }
@@ -89,6 +123,15 @@ impl Feed {
 
     pub fn stops(&self) -> &[Stop] {
         &self.stops
+    }
+
+    pub fn routes(&self) -> &[Route] {
+        &self.routes
+    }
+
+    /// The publisher's version of the feed (`feed_info.txt`), often the date it was made.
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 
     /// Opens one of the feed's large tables for streaming. Unlike the small tables, its
@@ -162,6 +205,7 @@ struct StopRow {
     location_type: Option<u8>,
     parent_station: Option<String>,
     town_name: Option<String>,
+    street_name: Option<String>,
 }
 
 fn read_stops(dir: &Path) -> Result<Vec<Stop>, Error> {
@@ -178,6 +222,7 @@ fn read_stops(dir: &Path) -> Result<Vec<Stop>, Error> {
                 .platform_code
                 .or(row.stop_code.filter(|_| row.parent_station.is_none())),
             town: row.town_name,
+            street: row.street_name,
             lat: row.stop_lat.unwrap_or_default(),
             lon: row.stop_lon.unwrap_or_default(),
         })
@@ -189,6 +234,7 @@ struct RouteRow {
     route_id: String,
     route_short_name: Option<String>,
     route_long_name: Option<String>,
+    route_type: Option<u16>,
     route_color: Option<String>,
     route_text_color: Option<String>,
 }
@@ -202,11 +248,22 @@ fn read_routes(dir: &Path) -> Result<Vec<Route>, Error> {
                 .route_short_name
                 .or(row.route_long_name)
                 .unwrap_or_else(|| row.route_id.clone()),
+            kind: RouteKind::from_gtfs(row.route_type),
             color: parse_color(row.route_color.as_deref()),
             text_color: parse_color(row.route_text_color.as_deref()),
             id: row.route_id,
         })
         .collect())
+}
+
+#[derive(Deserialize)]
+struct FeedInfoRow {
+    feed_version: Option<String>,
+}
+
+fn read_version(dir: &Path) -> Result<Option<String>, Error> {
+    let rows: Vec<FeedInfoRow> = rows(dir, "feed_info.txt", false)?;
+    Ok(rows.into_iter().next().and_then(|row| row.feed_version))
 }
 
 #[derive(Deserialize)]
@@ -288,7 +345,7 @@ fn read_frequencies(dir: &Path) -> Result<HashMap<String, Vec<Frequency>>, Error
 }
 
 /// Parses a GTFS date (`YYYYMMDD`).
-fn parse_date(s: &str) -> Option<Date> {
+pub(crate) fn parse_date(s: &str) -> Option<Date> {
     if s.len() != 8 || !s.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }

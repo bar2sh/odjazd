@@ -1,8 +1,17 @@
 //! The engine behind [odjazd]: reads a [GTFS] timetable, finds stops by name and answers
 //! "what leaves from here next?".
 //!
-//! The crate does no networking and no terminal output, so the same code can later run in
-//! the browser (WebAssembly) or behind an HTTP API.
+//! Two ways in:
+//!
+//! - [`Feed`] streams the timetable for a single query, which is what the command-line
+//!   app does.
+//! - [`Timetable`] holds a few days of it in memory for a server: departure boards with
+//!   live delays worked out from vehicle positions ([`realtime`]), and journey planning
+//!   ([`plan`]).
+//!
+//! The crate does no networking and no terminal output, so the same code can run behind
+//! an HTTP API or, later, in the browser (WebAssembly). [`install`] unpacks a timetable
+//! someone else has downloaded.
 //!
 //! ```no_run
 //! use odjazd_core::{Feed, search};
@@ -24,11 +33,19 @@ mod board;
 mod calendar;
 mod error;
 mod feed;
+mod geo;
+mod install;
+pub mod plan;
+pub mod realtime;
 mod search;
 mod time;
+pub mod timetable;
 
 pub use board::Departure;
 pub use error::Error;
-pub use feed::{Feed, Route, Stop, StopIdx};
+pub use feed::{Feed, Route, RouteKind, Stop, StopIdx};
+pub use geo::{LatLon, walking_time};
+pub use install::install;
 pub use search::{StopGroup, normalize, search};
 pub use time::GtfsTime;
+pub use timetable::{Live, Timetable, TripIdx};

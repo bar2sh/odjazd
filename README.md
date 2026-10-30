@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <b>Next departures from any Warsaw public transport stop, right in your terminal.</b><br>
+  <b>Next departures from any Warsaw public transport stop, in your terminal or on your phone.</b><br>
   <sub><i>Odjazd</i> is Polish for “departure”.</sub>
 </p>
 
@@ -32,6 +32,11 @@
 - **GTFS done right.** Night trips written as `24:05:00`, holiday timetables, metro
   headways, the 25-hour day when the clocks go back, and trips that end at the stop or
   only loop around it.
+- **Live delays.** The city publishes where every bus and tram is, but not how late it
+  runs. odjazd works that out from each vehicle's GPS position, and leaves out a vehicle
+  that has already passed your stop.
+- **Which pole to walk to.** In the web app, set Home and Work: odjazd plans a journey from
+  every pole within walking distance and tells you where to go and when to leave.
 - **One small binary.** No runtime, no account, no API key.
 
 ## Install
@@ -77,6 +82,28 @@ hour on a test terminal, sped up in the second half.
 The timetable lives in the system cache directory (`~/Library/Caches/odjazd` on macOS,
 `~/.cache/odjazd` on Linux). Set `ODJAZD_DATA_DIR` to keep it somewhere else.
 
+## Web app
+
+`odjazd-web` puts the same engine on your phone. It finds the poles nearest to you, each
+on its own (Świętokrzyska 01, 02, 03…), shows what leaves from each with live delays,
+and, once you have set Home or Work, tells you which pole to walk to and when to leave.
+It installs as an app (PWA).
+
+```bash
+cargo run --release -p odjazd-web     # then open http://localhost:8080
+```
+
+The server downloads the timetable on its first start, or reuses the one `odjazd update`
+fetched, and refreshes it every night. Browsers share your location only with pages
+served over HTTPS (or from localhost), so to use it on a phone, host it behind HTTPS: the
+[Dockerfile](Dockerfile) builds a small container that runs anywhere. The JSON API is
+described in [`crates/odjazd-web/API.md`](crates/odjazd-web/API.md).
+
+The map shows OpenStreetMap's own tiles, which is fine for trying it out. Their
+[tile usage policy](https://operations.osmfoundation.org/policies/tiles/) is not meant
+for an app many people use, so before putting it online, point `TILES` in
+[`web/map.js`](crates/odjazd-web/web/map.js) at a tile provider of your own.
+
 ## How it works
 
 odjazd reads Warsaw's timetable as [GTFS](https://gtfs.org), the format behind transit
@@ -97,6 +124,18 @@ flowchart TB
     update --> query
 ```
 
+The web app keeps the timetable in memory instead, and follows the vehicles as they go:
+
+```mermaid
+flowchart LR
+    feed["GTFS feed<br/>every night"] --> tt[("3 days of trips<br/>in memory")]
+    gps["vehicle positions<br/>every 15 s"] --> delays["how late<br/>each trip runs"]
+    tt --> delays
+    tt --> api["JSON API<br/>poles · departures · plans"]
+    delays --> api
+    api --> pwa["web app<br/>on your phone"]
+```
+
 A few details make this harder than it looks:
 
 - **A service day is not a calendar day.** GTFS counts time from "noon minus 12 hours" of
@@ -108,22 +147,35 @@ A few details make this harder than it looks:
   09:23" in `frequencies.txt`. odjazd expands them into estimated departures, marked `~`.
 - **Arriving is not departing.** A trip is listed only if it goes on to somewhere else.
   A tram that ends here, or only loops round to another pole of the same stop, is not.
+- **Live delays come from positions.** Warsaw publishes every vehicle's GPS position
+  every 10–20 seconds ([GTFS-Realtime](https://gtfs.org/documentation/realtime/)), but no
+  delays. odjazd finds where along its trip each vehicle is, between which two stops and
+  how far, compares that with when the timetable says it should be there, and carries the
+  difference over to the stops ahead. A tram waiting at a stop ahead of time is not early;
+  one that has passed your stop is gone, whatever the timetable says.
+- **Which pole to walk to** is a journey-planning question. The web app keeps three days
+  of the timetable in memory, laid out for [RAPTOR](https://www.microsoft.com/en-us/research/publication/round-based-public-transit-routing/)
+  (Delling, Pajor, Werneck), and runs it from every pole within walking distance, with
+  live delays: a late tram can make the bus across the street the better choice.
 - **Speed.** Most of the 8 million rows belong to other days. Trips are looked up once
   per trip rather than once per row, so those rows are skipped after a single comparison.
   Trimming whitespace in every CSV field took two thirds of the run time, so only the
   fields in use are trimmed. A query takes about 0.75 s on an Apple M-series laptop.
 
-The code is split into two crates:
+The code is split into three crates:
 
 | Crate | What it does |
 |---|---|
-| [`odjazd-core`](crates/odjazd-core) | GTFS parsing, stop search, departures. No networking or terminal I/O, so it can be compiled to WebAssembly. |
+| [`odjazd-core`](crates/odjazd-core) | GTFS and GTFS-Realtime parsing, stop search, departures, live delays, journey planning. No networking or terminal I/O, so it can be compiled to WebAssembly. |
 | [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours, and the live board. |
+| [`odjazd-web`](crates/odjazd-web) | The web app and its JSON API: keeps the timetable fresh, follows vehicle positions, serves the PWA. |
 
 Built with [clap](https://crates.io/crates/clap), [csv](https://crates.io/crates/csv) +
 [serde](https://serde.rs), [jiff](https://crates.io/crates/jiff),
 [ratatui](https://ratatui.rs), [ureq](https://crates.io/crates/ureq),
-[zip](https://crates.io/crates/zip) and [anstream](https://crates.io/crates/anstream).
+[zip](https://crates.io/crates/zip), [anstream](https://crates.io/crates/anstream) and
+[prost](https://crates.io/crates/prost); the web app with [axum](https://crates.io/crates/axum)
+on [tokio](https://tokio.rs), and [Leaflet](https://leafletjs.com) for the map.
 
 ## Development
 
@@ -133,9 +185,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-The tests run against a tiny hand-written feed in
-[`crates/odjazd-core/tests/fixtures/mini`](crates/odjazd-core/tests/fixtures/mini) that
-covers each tricky case above. Both animations come from real output, after `odjazd
+The tests run against tiny hand-written feeds:
+[`mini`](crates/odjazd-core/tests/fixtures/mini) covers each tricky case above, and
+[`commute`](crates/odjazd-core/tests/fixtures/commute) a trip to work where a late tram
+changes which pole to walk to. Both animations come from real output, after `odjazd
 update`:
 
 ```bash
@@ -146,8 +199,10 @@ cargo test -p odjazd --release -- --ignored readme_animation   # docs/tui.svg
 ## Data
 
 The timetable comes from [Zarząd Transportu Miejskiego w Warszawie](https://ztm.waw.pl),
-converted to GTFS by [Mikołaj Kuranowski](https://mkuran.pl/gtfs/). odjazd downloads it
-from there and does not redistribute it.
+converted to GTFS by [Mikołaj Kuranowski](https://mkuran.pl/gtfs/). Vehicle positions come
+from [Miasto Stołeczne Warszawa](http://api.um.warszawa.pl), matched to the timetable by
+Mikołaj Kuranowski. odjazd downloads both from there and does not redistribute them. The
+web app's map is © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors.
 
 ## License
 

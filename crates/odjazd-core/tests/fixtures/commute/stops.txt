@@ -1,0 +1,8 @@
+stop_id,stop_name,stop_code,stop_lat,stop_lon,location_type,town_name,street_name
+Z1,Zajezdnia,01,52.1950,21.0000,0,Warszawa,Torowa
+H1,Dom,01,52.2000,21.0000,0,Warszawa,Domowa
+H2,Dom,02,52.2002,21.0010,0,Warszawa,Boczna
+A1,Aleja,01,52.2100,21.0000,0,Warszawa,Domowa
+B1,Bulwar,01,52.2200,21.0000,0,Warszawa,Domowa
+W1,Praca,01,52.2300,21.0000,0,Warszawa,Biurowa
+W2,Praca,02,52.2302,21.0012,0,Warszawa,Biurowa

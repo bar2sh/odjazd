@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::{Feed, StopIdx};
+use crate::{Feed, LatLon, StopIdx};
 
 /// Stops with the same name further apart than this are different places: there is a
 /// "Centrum" in Warsaw and another one in Łomianki.
-const SAME_PLACE_KM: f64 = 2.0;
+const SAME_PLACE_M: f64 = 2_000.0;
 
 /// All the poles and platforms riders think of as one stop, e.g. the twelve poles of
 /// "Pl. Narutowicza".
@@ -14,8 +14,8 @@ pub struct StopGroup {
     pub name: String,
     pub stops: Vec<StopIdx>,
     words: Vec<String>,
-    lat: f64,
-    lon: f64,
+    /// Where the first pole stands.
+    position: LatLon,
 }
 
 impl Feed {
@@ -29,7 +29,7 @@ impl Feed {
             let same_name = by_name.entry(words.clone()).or_default();
             let nearby = same_name
                 .iter()
-                .find(|&&g| distance_km(&groups[g], stop.lat, stop.lon) < SAME_PLACE_KM);
+                .find(|&&g| groups[g].position.distance(stop.position()) < SAME_PLACE_M);
             match nearby {
                 Some(&g) => groups[g].stops.push(i),
                 None => {
@@ -38,8 +38,7 @@ impl Feed {
                         name: stop.name.clone(),
                         stops: vec![i],
                         words,
-                        lat: stop.lat,
-                        lon: stop.lon,
+                        position: stop.position(),
                     });
                 }
             }
@@ -171,13 +170,6 @@ fn similarity(query: &str, word: &str) -> f64 {
     }
 }
 
-/// Good enough for "are these within a couple of kilometres?".
-fn distance_km(group: &StopGroup, lat: f64, lon: f64) -> f64 {
-    let x = (lon - group.lon).to_radians() * ((lat + group.lat) / 2.0).to_radians().cos();
-    let y = (lat - group.lat).to_radians();
-    6371.0 * x.hypot(y)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,8 +179,7 @@ mod tests {
             name: name.to_owned(),
             stops: Vec::new(),
             words: place_words(name),
-            lat: 0.0,
-            lon: 0.0,
+            position: LatLon::new(0.0, 0.0),
         }
     }
 

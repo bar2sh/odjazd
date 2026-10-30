@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # A pull request that changes this workflow builds and checks every archive, but
+  # releases nothing.
+  pull_request:
+    paths: [.github/workflows/release.yml]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Links the C runtime into odjazd.exe, so it runs without the Visual C++ redistributable.
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # Built on Apple silicon as well; the smoke test runs it under Rosetta 2.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      ARCHIVE: odjazd-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --package odjazd --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir "$ARCHIVE"
+          cp README.md LICENSE "$ARCHIVE"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp target/${{ matrix.target }}/release/odjazd.exe "$ARCHIVE"
+            7z a "$ARCHIVE.zip" "$ARCHIVE"
+            echo "ASSET=$ARCHIVE.zip" >> "$GITHUB_ENV"
+          else
+            cp target/${{ matrix.target }}/release/odjazd "$ARCHIVE"
+            # Without macOS metadata: no AppleDouble ._ files, no extended attributes.
+            COPYFILE_DISABLE=1 tar --no-xattrs -czf "$ARCHIVE.tar.gz" "$ARCHIVE"
+            echo "ASSET=$ARCHIVE.tar.gz" >> "$GITHUB_ENV"
+          fi
+      - name: Smoke test
+        run: |
+          mkdir unpacked
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z x -ounpacked "$ASSET"
+          else
+            tar xzf "$ASSET" -C unpacked
+          fi
+          unpacked/$ARCHIVE/odjazd --help
+          version=$(unpacked/$ARCHIVE/odjazd --version)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$version" != "odjazd ${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, but the binary says $version. Bump the version in Cargo.toml."
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    # Only a pushed tag gets here; a pull request stops after the builds.
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: >-
+            Prebuilt binaries for macOS (Apple silicon and Intel), Linux and Windows:
+            unpack the archive for your system and put `odjazd` on your `PATH`.
+            macOS may block the unsigned binary at first; `xattr -d com.apple.quarantine odjazd`
+            clears that. More in the [README](https://github.com/bar2sh/odjazd#install).
+        run: |
+          gh release create "$GITHUB_REF_NAME" odjazd-* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "odjazd $GITHUB_REF_NAME" \
+            --notes "$NOTES" \
+            --generate-notes

@@ -105,18 +105,6 @@ Built with [clap](https://crates.io/crates/clap), [csv](https://crates.io/crates
 [ureq](https://crates.io/crates/ureq), [zip](https://crates.io/crates/zip) and
 [anstream](https://crates.io/crates/anstream).
 
-## Roadmap
-
-- [x] **v0.1:** departure board for any stop, forgiving stop search
-- [ ] **v0.2:** a live, self-refreshing board in a TUI (`ratatui`), and instant start from
-  a precomputed binary timetable (`rkyv`)
-- [ ] **v0.3:** where is my tram right now: live vehicle positions from the city's open
-  data API
-- [ ] **v0.4:** journey planner (`odjazd route A B`) using the RAPTOR algorithm (Delling,
-  Pajor, Werneck, Microsoft Research), with benchmarks
-- [ ] **v1.0:** `odjazd-core` compiled to WebAssembly, with a map you can try in the
-  browser
-
 ## Development
 
 ```bash

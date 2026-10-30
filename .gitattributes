@@ -1,0 +1,2 @@
+# Demo tooling is documentation, not part of the Rust code base.
+docs/** linguist-documentation

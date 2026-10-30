@@ -1,0 +1,16 @@
+[package]
+name = "odjazd-core"
+description = "GTFS timetable loading, stop search and departure queries behind the odjazd CLI"
+keywords = ["gtfs", "transit", "timetable", "warsaw"]
+categories = ["parser-implementations"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+csv = "1.4.0"
+jiff = "0.2.38"
+serde = { version = "1.0.229", features = ["derive"] }
+strsim = "0.11.1"
+thiserror = "2.0.21"

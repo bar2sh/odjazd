@@ -1,0 +1,10 @@
+stop_id,stop_name,stop_code,platform_code,stop_lat,stop_lon,location_type,parent_station,town_name
+A1,Pl. Testowy,01,,52.2200,21.0000,0,,Warszawa
+A2,Pl. Testowy,02,,52.2202,21.0004,0,,Warszawa
+B1,Końcowa,01,,52.2300,21.0100,0,,Warszawa
+C1,Centrum,01,,52.2310,21.0120,0,,Warszawa
+C2,Centrum,01,,52.3400,20.8700,0,,Łomianki
+MB,Metro Testowa,01,,52.2252,21.0049,0,,Warszawa
+MS,Testowa,,,52.2250,21.0050,1,,Warszawa
+MP,Testowa,A10,M1,52.2251,21.0051,0,MS,Warszawa
+MK,Kabacka,A01,M1,52.1300,21.0650,0,,Warszawa

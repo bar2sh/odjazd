@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="title desc">
+  <title id="title">odjazd</title>
+  <desc id="desc">Warsaw public transport departures, right in your terminal. An amber LED departure board lists tram 16 to Muranowska, metro M1 to Kabaty, bus 171 to Torwar and metro M2 to Bemowo.</desc>
+  <defs>
+    <pattern id="led-big" width="7" height="7" patternUnits="userSpaceOnUse">
+      <circle cx="3.5" cy="3.5" r="2.6" fill="#fff"/>
+    </pattern>
+    <pattern id="led-small" width="3" height="3" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.2" fill="#fff"/>
+    </pattern>
+    <pattern id="unlit" width="6" height="6" patternUnits="userSpaceOnUse">
+      <circle cx="3" cy="3" r="1.3" fill="#1d1808"/>
+    </pattern>
+    <mask id="mask-big" maskUnits="userSpaceOnUse" x="0" y="0" width="1200" height="400">
+      <rect width="1200" height="400" fill="url(#led-big)"/>
+    </mask>
+    <mask id="mask-small" maskUnits="userSpaceOnUse" x="0" y="0" width="1200" height="400">
+      <rect width="1200" height="400" fill="url(#led-small)"/>
+    </mask>
+    <filter id="glow" x="-20%" y="-50%" width="140%" height="200%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="398" rx="20" fill="#0d1117" stroke="#30363d" stroke-width="2"/>
+
+  <!-- Name, lit up like the LED boards at Warsaw stops -->
+  <g filter="url(#glow)">
+    <text x="60" y="194" mask="url(#mask-big)" fill="#ffb000" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="138" font-weight="800">odjazd</text>
+  </g>
+  <g fill="#e6edf3" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="32" font-weight="600">
+    <text x="64" y="262">Warsaw departures,</text>
+    <text x="64" y="302">right in your terminal.</text>
+  </g>
+  <text x="64" y="350" fill="#7d8590" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20">Rust · GTFS · open data from ZTM Warszawa</text>
+
+  <!-- Departure board -->
+  <rect x="640" y="52" width="512" height="296" rx="14" fill="#07080a" stroke="#2b3036" stroke-width="2"/>
+  <rect x="652" y="64" width="488" height="272" rx="6" fill="url(#unlit)"/>
+  <line x1="672" y1="124" x2="1124" y2="124" stroke="#3d2f00" stroke-width="2"/>
+  <g filter="url(#glow)" fill="#ffb000" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-weight="700">
+    <g mask="url(#mask-small)" font-size="22">
+      <text x="672" y="104">METRO ŚWIĘTOKRZYSKA</text>
+      <text x="1124" y="104" text-anchor="end">20:35</text>
+    </g>
+    <g mask="url(#mask-small)" font-size="26">
+      <text x="752" y="168">Muranowska</text>
+      <text x="1124" y="168" text-anchor="end">1 min</text>
+      <text x="752" y="216">Kabaty</text>
+      <text x="1124" y="216" text-anchor="end">~2 min</text>
+      <text x="752" y="264">Torwar</text>
+      <text x="1124" y="264" text-anchor="end">2 min</text>
+      <text x="752" y="312">Bemowo</text>
+      <text x="1124" y="312" text-anchor="end">~3 min</text>
+    </g>
+  </g>
+  <g font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="700" fill="#fff" text-anchor="middle">
+    <rect x="672" y="144" width="62" height="34" rx="6" fill="#b60000"/>
+    <text x="703" y="168">16</text>
+    <rect x="672" y="192" width="62" height="34" rx="6" fill="#0000bb"/>
+    <text x="703" y="216">M1</text>
+    <rect x="672" y="240" width="62" height="34" rx="6" fill="#880077"/>
+    <text x="703" y="264">171</text>
+    <rect x="672" y="288" width="62" height="34" rx="6" fill="#bb0000"/>
+    <text x="703" y="312">M2</text>
+  </g>
+</svg>

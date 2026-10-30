@@ -1,0 +1,21 @@
+[package]
+name = "odjazd"
+description = "Next departures from any Warsaw public transport stop, right in your terminal"
+keywords = ["gtfs", "transit", "timetable", "warsaw", "cli"]
+categories = ["command-line-utilities"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.14"
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dirs = "7.0.0"
+jiff = "0.2.38"
+odjazd-core.workspace = true
+ureq = "3.5.0"
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }

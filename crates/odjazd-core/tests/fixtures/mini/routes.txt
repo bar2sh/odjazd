@@ -1,0 +1,5 @@
+route_id,agency_id,route_short_name,route_long_name,route_type,route_color,route_text_color
+15,0,15,Pl. Testowy – Końcowa,0,B60000,FFFFFF
+N1,0,N1,Nocny,3,000000,FFFFFF
+S1,0,S1,Sobotni,3,,
+M1,0,M1,Metro,1,,

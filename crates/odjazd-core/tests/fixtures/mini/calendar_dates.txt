@@ -1,0 +1,4 @@
+service_id,date,exception_type
+FRI,20261030,1
+SAT,20261031,2
+METRO,20261030,1

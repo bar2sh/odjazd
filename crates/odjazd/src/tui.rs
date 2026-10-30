@@ -459,6 +459,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)], status: &st
 }
 
 #[cfg(test)]
+mod film;
+
+#[cfg(test)]
 mod tests {
     use jiff::civil::date;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Modifier};

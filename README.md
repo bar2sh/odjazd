@@ -20,6 +20,8 @@
 
 ## Highlights
 
+- **A live board.** Run `odjazd` on its own, type a stop's name and keep its departures
+  on screen, counting down by the second and refreshing themselves.
 - **Forgiving stop search.** `plac narutowicza`, `pl narutowicza` and `narutowica` all
   find *Pl. Narutowicza*; Polish letters are optional.
 - **Whole stops, not single poles.** All poles of a stop are shown together, and a metro
@@ -46,13 +48,31 @@ cache directory.
 ## Usage
 
 ```bash
-odjazd "dworzec centralny"        # the next 12 departures
+odjazd                            # the live board: find a stop as you type
+odjazd centrum --live             # the live board of one stop
+odjazd "dworzec centralny"        # the next 12 departures, printed once
 odjazd politechnika -n 5          # just 5 of them
 odjazd centrum --at 23:50         # what still runs late tonight
 odjazd stops narutowicza          # which stops match, with their poles
 odjazd update                     # download a fresh timetable
 odjazd update --url <gtfs.zip>    # ...or another city's GTFS feed
 ```
+
+### The live board
+
+<p align="center">
+  <img src="docs/tui.svg" width="768" alt="The live board: typing “centrum” narrows a list of stops, Enter opens Centrum, and its trams, buses and metro trains count down to departure and leave the board">
+</p>
+
+Type to search, pick a stop with the arrow keys and press Enter. Its departures stay on
+screen, counting down by the second; the ones about to leave turn amber, and the board
+asks the timetable again every 30 seconds. Tab moves on to the next matching stop, Esc
+goes back to the search and `q` quits.
+
+The animation is the app itself: its own drawing code, run on the real timetable at rush
+hour on a test terminal, sped up in the second half.
+
+### Where the timetable lives
 
 The timetable lives in the system cache directory (`~/Library/Caches/odjazd` on macOS,
 `~/.cache/odjazd` on Linux). Set `ODJAZD_DATA_DIR` to keep it somewhere else.
@@ -98,12 +118,12 @@ The code is split into two crates:
 | Crate | What it does |
 |---|---|
 | [`odjazd-core`](crates/odjazd-core) | GTFS parsing, stop search, departures. No networking or terminal I/O, so it can be compiled to WebAssembly. |
-| [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours. |
+| [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours, and the live board. |
 
 Built with [clap](https://crates.io/crates/clap), [csv](https://crates.io/crates/csv) +
 [serde](https://serde.rs), [jiff](https://crates.io/crates/jiff),
-[ureq](https://crates.io/crates/ureq), [zip](https://crates.io/crates/zip) and
-[anstream](https://crates.io/crates/anstream).
+[ratatui](https://ratatui.rs), [ureq](https://crates.io/crates/ureq),
+[zip](https://crates.io/crates/zip) and [anstream](https://crates.io/crates/anstream).
 
 ## Development
 
@@ -115,8 +135,13 @@ cargo fmt --all
 
 The tests run against a tiny hand-written feed in
 [`crates/odjazd-core/tests/fixtures/mini`](crates/odjazd-core/tests/fixtures/mini) that
-covers each tricky case above. The animated demo is rendered from real output by
-[`docs/demo.py`](docs/demo.py): `cargo build --release && python3 docs/demo.py swietokrzyska`.
+covers each tricky case above. Both animations come from real output, after `odjazd
+update`:
+
+```bash
+cargo build --release && python3 docs/demo.py swietokrzyska
+cargo test -p odjazd --release -- --ignored readme_animation   # docs/tui.svg
+```
 
 ## Data
 

@@ -8,11 +8,11 @@ use std::{
     ptr,
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::Result;
-use jiff::{SignedDuration, Zoned};
+use jiff::{SignedDuration, Timestamp, Zoned};
 use odjazd_core::{Departure, Feed, Route, StopGroup, search};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -24,7 +24,7 @@ use ratatui::{
 };
 
 /// How often a board asks the timetable again.
-const REFRESH: Duration = Duration::from_secs(30);
+const REFRESH: SignedDuration = SignedDuration::from_secs(30);
 
 /// Departures per query: more than fit on a tall terminal.
 const LIMIT: usize = 40;
@@ -67,15 +67,21 @@ fn worker<'f>(feed: &'f Feed, inbox: &Receiver<&'f StopGroup>, outbox: &Sender<A
         let departures = feed
             .departures(&group.stops, &now, LIMIT)
             .map_err(|error| format!("{:#}", anyhow::Error::from(error)));
-        if outbox.send(Answer { group, departures }).is_err() {
+        let answer = Answer {
+            group,
+            at: now.timestamp(),
+            departures,
+        };
+        if outbox.send(answer).is_err() {
             return;
         }
     }
 }
 
-/// The worker's reply: departures from `group`, or why there are none.
+/// The worker's reply: departures from `group` as of `at`, or why there are none.
 struct Answer<'f> {
     group: &'f StopGroup,
+    at: Timestamp,
     departures: Result<Vec<Departure<'f>>, String>,
 }
 
@@ -98,8 +104,8 @@ struct Board<'f> {
     index: usize,
     departures: Vec<Departure<'f>>,
     error: Option<String>,
-    /// When the last answer came, and whether a query is running now.
-    answered: Option<Instant>,
+    /// When the departures on display were looked up, and whether a query is running now.
+    answered: Option<Timestamp>,
     waiting: bool,
 }
 
@@ -126,15 +132,8 @@ impl<'f> App<'f> {
             for answer in answers.try_iter() {
                 self.receive(answer);
             }
-            if self
-                .board
-                .as_ref()
-                .and_then(|board| board.answered)
-                .is_some_and(|at| at.elapsed() >= REFRESH)
-            {
-                self.ask();
-            }
             let now = Zoned::now().with_time_zone(self.feed.timezone().clone());
+            self.refresh_if_stale(&now);
             terminal.draw(|frame| self.draw(frame, &now))?;
             // Wake up four times a second, so the clock and the countdowns stay current.
             if event::poll(Duration::from_millis(250))?
@@ -175,6 +174,14 @@ impl<'f> App<'f> {
         self.ask();
     }
 
+    /// Asks again once the departures on display are `REFRESH` old.
+    fn refresh_if_stale(&mut self, now: &Zoned) {
+        let answered = self.board.as_ref().and_then(|board| board.answered);
+        if answered.is_some_and(|at| now.timestamp().duration_since(at) >= REFRESH) {
+            self.ask();
+        }
+    }
+
     /// Asks the worker for fresh departures, unless it is already on it.
     fn ask(&mut self) {
         if let Some(board) = &mut self.board
@@ -196,7 +203,7 @@ impl<'f> App<'f> {
             return;
         };
         board.waiting = false;
-        board.answered = Some(Instant::now());
+        board.answered = Some(answer.at);
         match answer.departures {
             Ok(departures) => {
                 board.departures = departures;
@@ -251,10 +258,11 @@ impl<'f> App<'f> {
         let [area] = Layout::horizontal([Constraint::Max(WIDTH)])
             .flex(Flex::Center)
             .areas(frame.area());
-        let [header, rule, body, footer] = Layout::vertical([
+        let [header, rule, body, _, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Fill(1),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(area);
@@ -265,7 +273,8 @@ impl<'f> App<'f> {
         };
         frame.render_widget(Line::from(title), header);
         let clock = now.strftime("%a %-d %b  %H:%M:%S").to_string();
-        frame.render_widget(Line::from(clock).dim().right_aligned(), header);
+        // The span is dimmed, not the line: a line's style covers the whole row, title too.
+        frame.render_widget(Line::from(clock.dim()).right_aligned(), header);
         frame.render_widget(Line::from("─".repeat(rule.width.into())).dim(), rule);
 
         match &self.board {
@@ -321,7 +330,10 @@ fn draw_board(
     keys.extend([("r", "refresh"), ("q", "quit")]);
     let status = match board.answered {
         _ if board.waiting => "updating…".to_owned(),
-        Some(at) => format!("updated {} s ago", at.elapsed().as_secs()),
+        Some(at) => {
+            let age = now.timestamp().duration_since(at).as_secs().max(0);
+            format!("updated {age} s ago")
+        }
         None => String::new(),
     };
     draw_footer(frame, footer, &keys, &status);
@@ -433,19 +445,23 @@ fn draw_search(
     draw_footer(frame, footer, &keys, "data: ZTM Warszawa");
 }
 
-/// Keys and what they do on the left, `status` on the right.
+/// Keys and what they do on the left, `status` on the right if there is room for it.
 fn draw_footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)], status: &str) {
-    let spans = keys
-        .iter()
-        .flat_map(|&(key, action)| [key.bold(), format!(" {action}  ").dim()]);
-    frame.render_widget(Line::from_iter(spans), area);
-    frame.render_widget(Line::from(status).dim().right_aligned(), area);
+    let keys = Line::from_iter(
+        keys.iter()
+            .flat_map(|&(key, action)| [key.bold(), format!(" {action}  ").dim()]),
+    );
+    let status = Line::from(status.dim()).right_aligned();
+    if keys.width() + status.width() <= area.width.into() {
+        frame.render_widget(status, area);
+    }
+    frame.render_widget(keys, area);
 }
 
 #[cfg(test)]
 mod tests {
     use jiff::civil::date;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Modifier};
 
     use super::*;
 
@@ -464,15 +480,18 @@ mod tests {
             .unwrap()
     }
 
-    /// What the app shows at `now` on a `width`×`height` terminal, one string per row.
-    fn screen(app: &mut App, now: &Zoned, width: u16, height: u16) -> Vec<String> {
+    /// What the app draws at `now` on a `width`×`height` terminal.
+    fn draw(app: &mut App, now: &Zoned, width: u16, height: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| app.draw(frame, now)).unwrap();
-        terminal
-            .backend()
-            .buffer()
+        terminal.backend().buffer().clone()
+    }
+
+    /// The text of `screen`, one string per row.
+    fn rows(screen: &Buffer) -> Vec<String> {
+        screen
             .content()
-            .chunks(width.into())
+            .chunks(screen.area.width.into())
             .map(|row| {
                 let row: String = row.iter().map(|cell| cell.symbol()).collect();
                 row.trim_end().to_owned()
@@ -501,22 +520,57 @@ mod tests {
         let departures = feed.departures(&group.stops, &now, LIMIT).unwrap();
         app.receive(Answer {
             group,
+            at: now.timestamp(),
             departures: Ok(departures),
         });
 
-        let screen = screen(&mut app, &now, 56, 8);
+        let later = now.checked_add(SignedDuration::from_secs(12)).unwrap();
+        let screen = draw(&mut app, &later, 56, 8);
         assert_eq!(
-            screen[..6],
+            rows(&screen),
             [
-                "Pl. Testowy                         Fri 30 Oct  09:55:00",
+                "Pl. Testowy                         Fri 30 Oct  09:55:12",
                 "────────────────────────────────────────────────────────",
-                " 15   Końcowa                        01    10:00   5 min",
+                " 15   Końcowa                        01    10:00   4 min",
                 " 15   Okrężna                        01    11:00",
                 " N1   Końcowa                        02    00:05",
                 "",
+                "",
+                "esc search  r refresh  q quit           updated 12 s ago",
             ]
         );
-        assert!(screen[7].starts_with("esc search  r refresh  q quit"));
+        // Only the clock and the status are dimmed, not the stop or the keys beside them.
+        let dim = |x: u16, y: u16| screen[(x, y)].modifier.contains(Modifier::DIM);
+        assert!(!dim(0, 0) && dim(55, 0));
+        assert!(!dim(0, 7) && dim(55, 7));
+        // Where the status does not fit beside the keys, it is left out.
+        let narrow = rows(&draw(&mut app, &later, 40, 8));
+        assert_eq!(narrow[7], "esc search  r refresh  q quit");
+    }
+
+    #[test]
+    fn a_stale_board_asks_again() {
+        let feed = feed();
+        let groups = feed.stop_groups();
+        let (requests, inbox) = mpsc::channel();
+        let mut app = App::new(&feed, &groups, requests);
+        app.search_for("plac testowy");
+        app.open(0);
+        let group = inbox.try_recv().unwrap();
+        let now = friday(&feed, 9, 55);
+        app.receive(Answer {
+            group,
+            at: now.timestamp(),
+            departures: Ok(Vec::new()),
+        });
+
+        app.refresh_if_stale(&now.checked_add(SignedDuration::from_secs(29)).unwrap());
+        assert!(inbox.try_recv().is_err());
+        app.refresh_if_stale(&now.checked_add(REFRESH).unwrap());
+        assert_eq!(inbox.try_recv().unwrap().name, "Pl. Testowy");
+        // Until the answer comes, the board does not ask again.
+        app.refresh_if_stale(&now.checked_add(REFRESH * 2).unwrap());
+        assert!(inbox.try_recv().is_err());
     }
 
     #[test]
@@ -527,7 +581,7 @@ mod tests {
         let mut app = App::new(&feed, &groups, requests);
         type_in(&mut app, "centrm");
 
-        let screen = screen(&mut app, &friday(&feed, 12, 0), 40, 8);
+        let screen = rows(&draw(&mut app, &friday(&feed, 12, 0), 40, 8));
         assert_eq!(
             screen[2..6],
             [

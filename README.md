@@ -63,13 +63,18 @@ odjazd reads Warsaw's timetable as [GTFS](https://gtfs.org), the format behind t
 directions in Google Maps: a zip of CSV tables.
 
 ```mermaid
-flowchart LR
-    zip["GTFS feed<br/>zip, 108 MB"] -->|odjazd update| cache[("Unpacked tables<br/>in the cache")]
-    cache -->|on start| small["stops · lines · calendar"]
-    small --> search["Stop search<br/>plac narutowicza → Pl. Narutowicza"]
-    cache -->|streamed once per query| scan["stop_times.txt<br/>8 million rows"]
-    search --> scan
-    scan --> board["Departures from yesterday's,<br/>today's and tomorrow's timetables"]
+flowchart TB
+    subgraph update ["odjazd update"]
+        direction LR
+        feed["GTFS feed<br/>108 MB zip"] --> cache[("tables unpacked<br/>in the cache")]
+    end
+    subgraph query ["odjazd plac narutowicza"]
+        direction LR
+        small["stops · lines<br/>calendar"] --> search["stop search<br/>→ Pl. Narutowicza"]
+        search --> scan["stop_times.txt<br/>8 million rows, streamed"]
+        scan --> board["departures from three<br/>days' timetables"]
+    end
+    update --> query
 ```
 
 A few details make this harder than it looks:

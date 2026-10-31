@@ -15,7 +15,7 @@ use jiff::Timestamp;
 use crate::{
     LatLon, StopIdx, Timetable, TripIdx,
     geo::walking_time,
-    realtime::{MAX_DELAY_S, Realtime, Status},
+    realtime::{Realtime, Status},
     timetable::{Live, Pattern},
 };
 
@@ -240,6 +240,20 @@ fn merge_walks(legs: Vec<Leg>) -> Vec<Leg> {
     merged
 }
 
+/// Per pattern, the most any of its tracked trips runs late, in seconds.
+fn lateness(timetable: &Timetable, live: &Realtime) -> Vec<u32> {
+    let mut late = vec![0; timetable.patterns.len()];
+    for vehicle in &live.vehicles {
+        if let (Some(trip), Some(progress)) = (vehicle.trip, vehicle.progress)
+            && let Some(trip) = timetable.trips.get(trip)
+        {
+            let delay = u32::try_from(progress.delay).unwrap_or(0);
+            late[trip.pattern] = late[trip.pattern].max(delay);
+        }
+    }
+    late
+}
+
 /// How a stop was reached.
 #[derive(Debug, Clone, Copy)]
 struct Label {
@@ -285,6 +299,9 @@ struct Search<'t> {
     /// Per pattern, the first position to scan it from this round.
     queue: Vec<usize>,
     queued: Vec<usize>,
+    /// Per pattern, how late its latest tracked trip runs: no trip due to leave longer ago
+    /// than that can still be caught.
+    late: Vec<u32>,
 }
 
 impl<'t> Search<'t> {
@@ -301,6 +318,7 @@ impl<'t> Search<'t> {
             marked_stops: Vec::new(),
             queue: vec![usize::MAX; timetable.patterns.len()],
             queued: Vec::new(),
+            late: lateness(timetable, live),
         }
     }
 
@@ -430,7 +448,7 @@ impl<'t> Search<'t> {
             if current.is_some_and(|departure| departure <= ready) {
                 continue;
             }
-            if let Some((slot, delay, departure)) = self.catch(pattern, i, ready)
+            if let Some((slot, delay, departure)) = self.catch(pattern, self.late[p], i, ready)
                 && current.is_none_or(|current| departure < current)
             {
                 boarded = Some((slot, i, delay));
@@ -439,9 +457,16 @@ impl<'t> Search<'t> {
     }
 
     /// The trip leaving the `i`-th stop of `pattern` soonest at or after `ready`, live
-    /// delays included: slot, delay and departure.
-    fn catch(&self, pattern: &Pattern, i: usize, ready: u32) -> Option<(usize, i32, u32)> {
-        let earliest = ready.saturating_sub(MAX_DELAY_S as u32);
+    /// delays included: slot, delay and departure. None of its trips runs more than
+    /// `late` seconds late.
+    fn catch(
+        &self,
+        pattern: &Pattern,
+        late: u32,
+        i: usize,
+        ready: u32,
+    ) -> Option<(usize, i32, u32)> {
+        let earliest = ready.saturating_sub(late);
         let mut best: Option<(usize, i32, u32)> = None;
         for slot in pattern.first_departing(i, earliest)..pattern.trips.len() {
             let scheduled = pattern.departure(slot, i);

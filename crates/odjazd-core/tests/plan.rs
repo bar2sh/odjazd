@@ -111,6 +111,27 @@ fn a_late_tram_makes_the_bus_the_better_choice() {
 }
 
 #[test]
+fn a_late_tram_can_be_caught_after_its_time() {
+    let timetable = timetable();
+    // Only the tram goes to Aleja. The one due at Dom 01 at 08:00 is still at the depot at
+    // 07:58, two minutes late, so at 08:00 there is time to walk to the pole and catch it
+    // instead of waiting for the 08:10.
+    let depot = LatLon::new(52.1950, 21.0000);
+    let live = tram_at(&timetable, depot, at(7, 58));
+    let aleja = LatLon::new(52.2100, 21.0000);
+    let plan = timetable.plan(HOME, aleja, at(8, 0), &live);
+    let rides: Vec<_> = plan.options[0]
+        .rides()
+        .map(|ride| (ride.departure, ride.arrival, ride.live))
+        .collect();
+    let late = Live {
+        delay: 120,
+        stops_away: 1,
+    };
+    assert_eq!(rides, [(at(8, 2), at(8, 6), Some(late))]);
+}
+
+#[test]
 fn a_tram_that_has_left_is_not_on_the_board() {
     let timetable = timetable();
     // Halfway to Aleja at 07:59, three minutes early: it has left Dom 01 already.

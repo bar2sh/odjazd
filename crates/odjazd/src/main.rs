@@ -289,11 +289,12 @@ fn route(data_dir: &Path, args: &RouteArgs) -> Result<()> {
     let live = args.at.is_none() && !args.live.offline;
     let (timetable, realtime) = load(data_dir, start.date(), live)?;
     let none = Realtime::default();
-    let plan = timetable.plan(
+    let plan = timetable.plan_by(
         centre(&feed, from),
         centre(&feed, to),
         start.timestamp(),
         realtime.as_ref().unwrap_or(&none),
+        |journey| render::there(journey, to),
     );
     let out = &mut anstream::stdout().lock();
     render::journeys(out, &timetable, from, to, &start, &plan, args.limit)?;

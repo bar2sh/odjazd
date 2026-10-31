@@ -129,10 +129,10 @@ to leave at instead of now).
 }
 ```
 
-- `options` holds at most one journey per starting pole, best first. It is empty when
-  nothing gets there in the next few hours. Each option offers something the others
-  don't, such as a later start or fewer changes: one that sets off no later than another,
-  arrives no sooner and has no fewer changes is left out.
+- `options` holds at most one journey per starting pole, soonest arrival first. It is
+  empty when nothing gets there in the next few hours. Compared with any option before
+  it, each one has fewer changes, or sets off at least five minutes later and takes no
+  longer, with times compared to the minute, as a clock shows them.
 - `leave` is when to set off from `from` so as to catch the first vehicle.
 - In legs, a `from` or `to` of `null` means the requested `from` or `to` point.
 - A ride's `departure` and `arrival` are expected times (live delay included);

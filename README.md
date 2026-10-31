@@ -111,8 +111,9 @@ Pl. Narutowicza → Dw. Wileński  Fri 30 Oct, 08:15
 
 Each way starts at a different pole, so the first line says which one to walk to. Without
 `--at`, the times count live delays in: a late tram can make the bus across the street the
-better choice. Ways that would set off no later yet get there later, with no fewer
-changes, are left out.
+better choice. Ways are listed soonest there first, and each one is worth a look: compared
+with any way above it, it has fewer changes, or lets you set off at least five minutes later
+and takes no longer.
 
 ### Where the timetable lives
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{Feed, LatLon, StopIdx};
+use crate::{Feed, LatLon, Stop, StopIdx, Timetable};
 
 /// Stops with the same name further apart than this are different places: there is a
 /// "Centrum" in Warsaw and another one in Łomianki.
@@ -22,41 +22,52 @@ impl Feed {
     /// Groups stops by name. The "Metro Politechnika" bus and tram stops and the
     /// "Politechnika" metro platforms below them end up in one group.
     pub fn stop_groups(&self) -> Vec<StopGroup> {
-        let mut groups: Vec<StopGroup> = Vec::new();
-        let mut by_name: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
-        for (i, stop) in self.stops().iter().enumerate() {
-            let words = place_words(&stop.name);
-            let same_name = by_name.entry(words.clone()).or_default();
-            let nearby = same_name
-                .iter()
-                .find(|&&g| groups[g].position.distance(stop.position()) < SAME_PLACE_M);
-            match nearby {
-                Some(&g) => groups[g].stops.push(i),
-                None => {
-                    same_name.push(groups.len());
-                    groups.push(StopGroup {
-                        name: stop.name.clone(),
-                        stops: vec![i],
-                        words,
-                        position: stop.position(),
-                    });
-                }
-            }
-        }
-
-        let mut name_count: HashMap<String, usize> = HashMap::new();
-        for group in &groups {
-            *name_count.entry(group.name.clone()).or_default() += 1;
-        }
-        for group in &mut groups {
-            if name_count[&group.name] > 1
-                && let Some(town) = &self.stops()[group.stops[0]].town
-            {
-                group.name = format!("{} ({town})", group.name);
-            }
-        }
-        groups
+        group_stops(self.stops())
     }
+}
+
+impl Timetable {
+    /// Groups stops by name, as [`Feed::stop_groups`] does.
+    pub fn stop_groups(&self) -> Vec<StopGroup> {
+        group_stops(self.stops())
+    }
+}
+
+fn group_stops(stops: &[Stop]) -> Vec<StopGroup> {
+    let mut groups: Vec<StopGroup> = Vec::new();
+    let mut by_name: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+    for (i, stop) in stops.iter().enumerate() {
+        let words = place_words(&stop.name);
+        let same_name = by_name.entry(words.clone()).or_default();
+        let nearby = same_name
+            .iter()
+            .find(|&&g| groups[g].position.distance(stop.position()) < SAME_PLACE_M);
+        match nearby {
+            Some(&g) => groups[g].stops.push(i),
+            None => {
+                same_name.push(groups.len());
+                groups.push(StopGroup {
+                    name: stop.name.clone(),
+                    stops: vec![i],
+                    words,
+                    position: stop.position(),
+                });
+            }
+        }
+    }
+
+    let mut name_count: HashMap<String, usize> = HashMap::new();
+    for group in &groups {
+        *name_count.entry(group.name.clone()).or_default() += 1;
+    }
+    for group in &mut groups {
+        if name_count[&group.name] > 1
+            && let Some(town) = &stops[group.stops[0]].town
+        {
+            group.name = format!("{} ({town})", group.name);
+        }
+    }
+    groups
 }
 
 /// Stop groups matching `query`, best first. Typos, missing Polish letters and spelled-out

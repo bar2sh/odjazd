@@ -27,10 +27,17 @@ const TRANSFER_RADIUS_M: f64 = 400.0;
 
 /// The trips of three service days (yesterday, today and tomorrow), in memory.
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "cache",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct Timetable {
+    #[cfg_attr(feature = "cache", rkyv(with = crate::cache::IanaName))]
     timezone: TimeZone,
+    #[cfg_attr(feature = "cache", rkyv(with = rkyv::with::Map<crate::cache::Ymd>))]
     days: [Date; 3],
     /// Times are seconds after this instant, the start of the first service day.
+    #[cfg_attr(feature = "cache", rkyv(with = crate::cache::Nanoseconds))]
     epoch: Timestamp,
     version: Option<String>,
     stops: Vec<Stop>,
@@ -44,11 +51,19 @@ pub struct Timetable {
     /// The lines leaving each stop, in the order riders expect them.
     stop_routes: Vec<Vec<usize>>,
     /// GTFS `trip_id` → the trips made from it, by service day.
+    #[cfg_attr(
+        feature = "cache",
+        rkyv(with = rkyv::with::MapKV<rkyv::with::Identity, rkyv::with::Map<crate::cache::DayTrip>>)
+    )]
     trip_ids: HashMap<String, Vec<(Date, TripIdx)>>,
 }
 
 /// One run of a vehicle along a pattern.
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "cache",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub(crate) struct Trip {
     pub(crate) route: usize,
     pub(crate) headsign: String,
@@ -62,6 +77,10 @@ pub(crate) struct Trip {
 /// Trips of a line that call at the same stops in the same order, with the same rules
 /// about getting on and off. No trip of a pattern overtakes another.
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "cache",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub(crate) struct Pattern {
     pub(crate) route: usize,
     pub(crate) stops: Vec<StopIdx>,

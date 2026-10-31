@@ -131,7 +131,7 @@ the amber board. No server works them out: `odjazd-core` runs in your browser, c
 to WebAssembly, on a timetable that GitHub Actions builds every night. Yesterday, today
 and tomorrow come in one file of 2–3.5 MB, saved in binary form with
 [rkyv](https://rkyv.org), which a laptop loads in under half a second. The page goes by
-the timetable alone; live delays need the web app.
+the timetable alone; for live delays, use the command line or the web app.
 
 ## Web app
 

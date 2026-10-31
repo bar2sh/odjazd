@@ -69,7 +69,8 @@ fn starts(timetable: &Timetable, live: &Realtime, time: Timestamp) -> Vec<String
 #[test]
 fn walks_to_the_pole_that_gets_there_first() {
     let timetable = timetable();
-    // The tram from Dom 01 arrives at 08:12, the bus from Dom 02 at 08:13.
+    // The tram from Dom 01 arrives at 08:12, the bus from Dom 02 at 08:13. The bus is
+    // still offered: it leaves at 08:05, so you can set off later.
     assert_eq!(
         starts(&timetable, &Realtime::default(), at(7, 58)),
         ["Dom 01", "Dom 02"]
@@ -86,10 +87,11 @@ fn walks_to_the_pole_that_gets_there_first() {
 fn a_late_tram_makes_the_bus_the_better_choice() {
     let timetable = timetable();
     // At 07:58 the 07:56 tram is still at the depot: two minutes late, so it reaches
-    // Praca at 08:14, after the bus.
+    // Praca at 08:14, after the bus. Taking it would mean setting off earlier to arrive
+    // later, so it is not offered at all.
     let depot = LatLon::new(52.1950, 21.0000);
     let live = tram_at(&timetable, depot, at(7, 58));
-    assert_eq!(starts(&timetable, &live, at(7, 58)), ["Dom 02", "Dom 01"]);
+    assert_eq!(starts(&timetable, &live, at(7, 58)), ["Dom 02"]);
 
     let departures = timetable.departures(&[stop(&timetable, "H1")], at(7, 58), 2, &live);
     let times: Vec<_> = departures.iter().map(|d| (d.expected, d.live)).collect();

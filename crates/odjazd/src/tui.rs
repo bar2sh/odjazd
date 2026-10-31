@@ -1,19 +1,24 @@
-//! The live board: `odjazd` with no stop opens it on a stop search, `odjazd <stop> --live`
-//! straight on that stop. Departures count down every second and refresh themselves.
+//! The live board: `odjazd` with no stop opens it on a stop search, `odjazd <stop> --watch`
+//! straight on that stop. Departures count down every second, with live delays worked out
+//! from where the vehicles are.
 //!
-//! Reading the timetable takes a moment, so queries run on a worker thread and the clock
-//! keeps ticking meanwhile.
+//! A thread of its own reads the timetable and then follows the vehicles, so the search is
+//! there at once and the clock never stalls.
 
 use std::{
-    ptr,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
     thread,
     time::Duration,
 };
 
 use anyhow::Result;
-use jiff::{SignedDuration, Timestamp, Zoned};
-use odjazd_core::{Departure, Feed, Route, StopGroup, search};
+use jiff::{SignedDuration, Zoned, civil::Date};
+use odjazd_core::{
+    Feed, Live, Route, StopGroup, Timetable, realtime::Realtime, search, timetable::Departure,
+};
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers},
@@ -23,13 +28,23 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph, Row, Table, Wrap},
 };
 
-/// How often a board asks the timetable again.
-const REFRESH: SignedDuration = SignedDuration::from_secs(30);
+use crate::{
+    live,
+    render::{late_by, whereabouts},
+};
 
-/// Departures per query: more than fit on a tall terminal.
+/// How often the vehicle positions are downloaded. Warsaw publishes new ones every 10–20
+/// seconds.
+const FOLLOW: Duration = Duration::from_secs(15);
+
+/// Positions older than this no longer tell where the vehicles are.
+const STALE: SignedDuration = SignedDuration::from_mins(2);
+
+/// Departures worked out per board: more than fit on a tall terminal.
 const LIMIT: usize = 40;
 
-/// A departure stays on the board this long after its time, as "now".
+/// A departure stays on the board this long after its time, as "now", unless its vehicle
+/// is seen leaving.
 const GRACE: SignedDuration = SignedDuration::from_secs(30);
 
 /// Stops listed at most while searching.
@@ -38,57 +53,98 @@ const MATCHES: usize = 30;
 /// The amber of the LED displays at Warsaw stops, as in the README banner.
 const AMBER: Color = Color::Rgb(255, 176, 0);
 
+/// Delays, like the time a vehicle is late by, in a softer red than the terminal's.
+const LATE: Color = Color::Rgb(255, 123, 114);
+
+/// A vehicle on time or early.
+const ON_TIME: Color = Color::Rgb(63, 185, 80);
+
 /// The board never grows wider than this, so its columns stay together on a wide
 /// terminal.
 const WIDTH: u16 = 80;
 
-/// Runs the live board until the user quits, opening the board of `stop` if given.
-pub fn run(feed: &Feed, stop: Option<&str>) -> Result<()> {
+/// Runs the live board until the user quits, opening the board of `stop` if given. With
+/// `offline`, the times are the timetable's and the vehicles are not followed.
+pub fn run(feed: Feed, stop: Option<&str>, offline: bool) -> Result<()> {
+    let feed = Arc::new(feed);
     let groups = feed.stop_groups();
-    thread::scope(|scope| {
-        let (requests, inbox) = mpsc::channel();
-        let (outbox, answers) = mpsc::channel();
-        scope.spawn(move || worker(feed, &inbox, &outbox));
-        let mut app = App::new(feed, &groups, requests);
-        if let Some(stop) = stop {
-            app.search_for(stop);
-            app.open(0);
-        }
-        ratatui::run(|terminal| app.run(terminal, &answers))
-    })
+    let (news, inbox) = mpsc::channel();
+    let (refresh, asked) = mpsc::channel();
+    // Not joined: quitting should not wait for a download to time out.
+    thread::spawn({
+        let feed = Arc::clone(&feed);
+        move || follow(&feed, offline, &asked, &news)
+    });
+    let mut app = App::new(&feed, &groups, refresh, offline);
+    if let Some(stop) = stop {
+        app.search_for(stop);
+        app.open(0);
+    }
+    ratatui::run(|terminal| app.run(terminal, &inbox))
 }
 
-/// Answers departure queries until the app quits. When the user flicks through stops
-/// faster than the timetable is read, only the stop they ended up on is looked up.
-fn worker<'f>(feed: &'f Feed, inbox: &Receiver<&'f StopGroup>, outbox: &Sender<Answer<'f>>) {
-    while let Ok(group) = inbox.recv() {
-        let group = inbox.try_iter().last().unwrap_or(group);
-        let now = Zoned::now().with_time_zone(feed.timezone().clone());
-        let departures = feed
-            .departures(&group.stops, &now, LIMIT)
-            .map_err(|error| format!("{:#}", anyhow::Error::from(error)));
-        let answer = Answer {
-            group,
-            at: now.timestamp(),
-            departures,
-        };
-        if outbox.send(answer).is_err() {
-            return;
+/// What the background thread has found out.
+enum News {
+    /// The timetable, read for today, and again once a new day starts.
+    Timetable(Arc<Timetable>),
+    /// Where the vehicles are and how late, or why that is not known.
+    Live(Result<Realtime, String>),
+    /// The timetable cannot be read, so there is nothing to show.
+    Broken(String),
+}
+
+/// Reads the timetable, then follows the vehicles: downloads their positions every
+/// `FOLLOW`, or sooner when asked, until the app quits.
+fn follow(feed: &Feed, offline: bool, asked: &Receiver<()>, news: &Sender<News>) {
+    let mut read: Option<(Date, Arc<Timetable>)> = None;
+    let mut realtime = Realtime::default();
+    loop {
+        let today = Zoned::now().with_time_zone(feed.timezone().clone()).date();
+        if read.as_ref().is_none_or(|&(day, _)| day != today) {
+            let timetable = match Timetable::build(feed, today) {
+                Ok(timetable) => Arc::new(timetable),
+                Err(error) => {
+                    let error = format!("cannot read the timetable ({error}); try `odjazd update`");
+                    let _ = news.send(News::Broken(error));
+                    return;
+                }
+            };
+            realtime = Realtime::default();
+            if news.send(News::Timetable(Arc::clone(&timetable))).is_err() {
+                return;
+            }
+            read = Some((today, timetable));
+        }
+        if let Some((_, timetable)) = read.as_ref().filter(|_| !offline) {
+            let update = live::track(timetable, &realtime).map_err(|error| format!("{error:#}"));
+            if let Ok(update) = &update {
+                realtime = update.clone();
+            }
+            if news.send(News::Live(update)).is_err() {
+                return;
+            }
+        }
+        match asked.recv_timeout(FOLLOW) {
+            // Pressing `r` a few times still makes one download.
+            Ok(()) => while asked.try_recv().is_ok() {},
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
-}
-
-/// The worker's reply: departures from `group` as of `at`, or why there are none.
-struct Answer<'f> {
-    group: &'f StopGroup,
-    at: Timestamp,
-    departures: Result<Vec<Departure<'f>>, String>,
 }
 
 struct App<'f> {
     feed: &'f Feed,
     groups: &'f [StopGroup],
-    requests: Sender<&'f StopGroup>,
+    /// Asks the background thread for fresh vehicle positions.
+    refresh: Sender<()>,
+    offline: bool,
+    timetable: Option<Arc<Timetable>>,
+    /// Where the vehicles were last seen, and why the latest positions did not come.
+    realtime: Option<Realtime>,
+    trouble: Option<String>,
+    /// Why there is no timetable.
+    broken: Option<String>,
     /// The search box, the stops matching it and the one picked in the list.
     query: String,
     matches: Vec<&'f StopGroup>,
@@ -102,19 +158,19 @@ struct Board<'f> {
     group: &'f StopGroup,
     /// Its place in `App::matches`, so Tab can move on to the next one.
     index: usize,
-    departures: Vec<Departure<'f>>,
-    error: Option<String>,
-    /// When the departures on display were looked up, and whether a query is running now.
-    answered: Option<Timestamp>,
-    waiting: bool,
 }
 
 impl<'f> App<'f> {
-    fn new(feed: &'f Feed, groups: &'f [StopGroup], requests: Sender<&'f StopGroup>) -> Self {
+    fn new(feed: &'f Feed, groups: &'f [StopGroup], refresh: Sender<()>, offline: bool) -> Self {
         Self {
             feed,
             groups,
-            requests,
+            refresh,
+            offline,
+            timetable: None,
+            realtime: None,
+            trouble: None,
+            broken: None,
             query: String::new(),
             matches: Vec::new(),
             selected: ListState::default(),
@@ -123,17 +179,12 @@ impl<'f> App<'f> {
         }
     }
 
-    fn run(
-        &mut self,
-        terminal: &mut DefaultTerminal,
-        answers: &Receiver<Answer<'f>>,
-    ) -> Result<()> {
+    fn run(&mut self, terminal: &mut DefaultTerminal, inbox: &Receiver<News>) -> Result<()> {
         while !self.quit {
-            for answer in answers.try_iter() {
-                self.receive(answer);
+            for news in inbox.try_iter() {
+                self.receive(news);
             }
             let now = Zoned::now().with_time_zone(self.feed.timezone().clone());
-            self.refresh_if_stale(&now);
             terminal.draw(|frame| self.draw(frame, &now))?;
             // Wake up four times a second, so the clock and the countdowns stay current.
             if event::poll(Duration::from_millis(250))?
@@ -143,6 +194,22 @@ impl<'f> App<'f> {
             }
         }
         Ok(())
+    }
+
+    fn receive(&mut self, news: News) {
+        match news {
+            News::Timetable(timetable) => {
+                self.timetable = Some(timetable);
+                // Matched to the timetable that was replaced.
+                self.realtime = None;
+            }
+            News::Live(Ok(realtime)) => {
+                self.realtime = Some(realtime);
+                self.trouble = None;
+            }
+            News::Live(Err(trouble)) => self.trouble = Some(trouble),
+            News::Broken(error) => self.broken = Some(error),
+        }
     }
 
     fn search_for(&mut self, query: &str) {
@@ -163,54 +230,7 @@ impl<'f> App<'f> {
             return;
         };
         self.selected.select(Some(index));
-        self.board = Some(Board {
-            group,
-            index,
-            departures: Vec::new(),
-            error: None,
-            answered: None,
-            waiting: false,
-        });
-        self.ask();
-    }
-
-    /// Asks again once the departures on display are `REFRESH` old.
-    fn refresh_if_stale(&mut self, now: &Zoned) {
-        let answered = self.board.as_ref().and_then(|board| board.answered);
-        if answered.is_some_and(|at| now.timestamp().duration_since(at) >= REFRESH) {
-            self.ask();
-        }
-    }
-
-    /// Asks the worker for fresh departures, unless it is already on it.
-    fn ask(&mut self) {
-        if let Some(board) = &mut self.board
-            && !board.waiting
-        {
-            board.waiting = true;
-            // The worker only stops after the app does, so the request always arrives.
-            let _ = self.requests.send(board.group);
-        }
-    }
-
-    fn receive(&mut self, answer: Answer<'f>) {
-        // An answer for a stop the user has already left is of no use.
-        let Some(board) = self
-            .board
-            .as_mut()
-            .filter(|board| ptr::eq(board.group, answer.group))
-        else {
-            return;
-        };
-        board.waiting = false;
-        board.answered = Some(answer.at);
-        match answer.departures {
-            Ok(departures) => {
-                board.departures = departures;
-                board.error = None;
-            }
-            Err(error) => board.error = Some(error),
-        }
+        self.board = Some(Board { group, index });
     }
 
     fn key(&mut self, key: KeyEvent) {
@@ -223,7 +243,8 @@ impl<'f> App<'f> {
             match key.code {
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('/') => self.board = None,
-                KeyCode::Char('r') => self.ask(),
+                // The background thread only stops after the app does, so this arrives.
+                KeyCode::Char('r') => _ = self.refresh.send(()),
                 KeyCode::Tab if count > 1 => self.open((index + 1) % count),
                 KeyCode::BackTab if count > 1 => self.open((index + count - 1) % count),
                 _ => {}
@@ -254,6 +275,36 @@ impl<'f> App<'f> {
         }
     }
 
+    /// The vehicle positions, unless they are too old to go by.
+    fn live(&self, now: &Zoned) -> Option<&Realtime> {
+        self.realtime.as_ref().filter(|realtime| {
+            realtime
+                .published
+                .is_some_and(|published| now.timestamp().duration_since(published) < STALE)
+        })
+    }
+
+    /// What the footer says about the data.
+    fn status(&self, now: &Zoned) -> String {
+        if self.broken.is_some() {
+            return "no timetable".to_owned();
+        }
+        if self.timetable.is_none() {
+            return "reading the timetable…".to_owned();
+        }
+        if self.offline {
+            return "timetable only".to_owned();
+        }
+        match self.live(now).and_then(|realtime| realtime.published) {
+            Some(published) => {
+                let age = now.timestamp().duration_since(published).as_secs().max(0);
+                format!("live, positions {age} s old")
+            }
+            None if self.trouble.is_some() => "no live data".to_owned(),
+            None => "finding the vehicles…".to_owned(),
+        }
+    }
+
     fn draw(&mut self, frame: &mut Frame, now: &Zoned) {
         let [area] = Layout::horizontal([Constraint::Max(WIDTH)])
             .flex(Flex::Center)
@@ -277,78 +328,75 @@ impl<'f> App<'f> {
         frame.render_widget(Line::from(clock.dim()).right_aligned(), header);
         frame.render_widget(Line::from("─".repeat(rule.width.into())).dim(), rule);
 
+        let status = self.status(now);
         match &self.board {
-            Some(board) => draw_board(frame, board, &self.matches, now, body, footer),
+            Some(board) => self.draw_board(frame, board, now, &status, body, footer),
             None => draw_search(
                 frame,
                 self.feed,
                 &self.query,
                 &self.matches,
                 &mut self.selected,
+                &status,
                 body,
                 footer,
             ),
         }
     }
-}
 
-fn draw_board(
-    frame: &mut Frame,
-    board: &Board,
-    matches: &[&StopGroup],
-    now: &Zoned,
-    body: Rect,
-    footer: Rect,
-) {
-    let cutoff = now.timestamp() - GRACE;
-    let departures: Vec<&Departure> = board
-        .departures
-        .iter()
-        .filter(|departure| departure.time.timestamp() >= cutoff)
-        .collect();
-    if let Some(error) = &board.error {
-        let error = Paragraph::new(error.as_str())
-            .red()
-            .wrap(Wrap { trim: true });
-        frame.render_widget(error, body);
-    } else if departures.is_empty() {
-        let note = if board.waiting {
-            "Reading the timetable…"
+    fn draw_board(
+        &self,
+        frame: &mut Frame,
+        board: &Board,
+        now: &Zoned,
+        status: &str,
+        body: Rect,
+        footer: Rect,
+    ) {
+        if let Some(error) = &self.broken {
+            let error = Paragraph::new(error.as_str())
+                .red()
+                .wrap(Wrap { trim: true });
+            frame.render_widget(error, body);
+        } else if let Some(timetable) = &self.timetable {
+            let none = Realtime::default();
+            let live = self.live(now).unwrap_or(&none);
+            let from = now.timestamp() - GRACE;
+            let departures = timetable.departures(&board.group.stops, from, LIMIT, live);
+            if departures.is_empty() {
+                let note = Line::from("No departures in the next day or so.").dim();
+                frame.render_widget(note, body);
+            } else {
+                frame.render_widget(table(timetable, &departures, now), body);
+            }
         } else {
-            "No departures in the next day or so."
-        };
-        frame.render_widget(Line::from(note).dim(), body);
-    } else {
-        frame.render_widget(table(&departures, now), body);
-    }
-
-    let mut keys = vec![("esc", "search")];
-    let next = matches.get((board.index + 1) % matches.len().max(1));
-    if let Some(next) = next.filter(|_| matches.len() > 1) {
-        keys.push(("tab", next.name.as_str()));
-    }
-    keys.extend([("r", "refresh"), ("q", "quit")]);
-    let status = match board.answered {
-        _ if board.waiting => "updating…".to_owned(),
-        Some(at) => {
-            let age = now.timestamp().duration_since(at).as_secs().max(0);
-            format!("updated {age} s ago")
+            frame.render_widget(Line::from("Reading the timetable…").dim(), body);
         }
-        None => String::new(),
-    };
-    draw_footer(frame, footer, &keys, &status);
+
+        let mut keys = vec![("esc", "search")];
+        let next = self
+            .matches
+            .get((board.index + 1) % self.matches.len().max(1));
+        if let Some(next) = next.filter(|_| self.matches.len() > 1) {
+            keys.push(("tab", next.name.as_str()));
+        }
+        keys.extend([("r", "refresh"), ("q", "quit")]);
+        draw_footer(frame, footer, &keys, status);
+    }
 }
 
 /// One row per departure: the line in its own colours, where it goes, from which pole,
-/// when, and in how long.
-fn table<'a>(departures: &[&'a Departure], now: &Zoned) -> Table<'a> {
+/// when, and in how long. Tracked vehicles also show how late they are and where.
+fn table<'a>(timetable: &'a Timetable, departures: &[Departure<'a>], now: &Zoned) -> Table<'a> {
+    let zone = timetable.timezone();
     let width = departures
         .iter()
         .map(|departure| departure.route.name.chars().count())
         .max()
         .unwrap_or(0);
+    let tracked = departures.iter().any(|departure| departure.live.is_some());
     let rows = departures.iter().map(|departure| {
-        let minutes = departure.time.duration_since(now).as_mins();
+        let minutes = departure.expected.duration_since(now.timestamp()).as_mins();
         let countdown = match minutes {
             ..1 => "now".to_owned(),
             1..60 => format!("{minutes} min"),
@@ -356,32 +404,59 @@ fn table<'a>(departures: &[&'a Departure], now: &Zoned) -> Table<'a> {
         };
         let countdown = Line::from(countdown).bold().right_aligned();
         let approximate = if departure.approximate { "~" } else { "" };
-        let time = format!("{approximate}{}", departure.time.strftime("%H:%M"));
+        let time = departure.scheduled.to_zoned(zone.clone()).strftime("%H:%M");
         let route = &departure.route.name;
-        Row::new([
+        let code = timetable.stops()[departure.stop].code.as_deref();
+        let mut cells = vec![
             Line::from(Span::styled(
                 format!(" {route:^width$} "),
                 badge(departure.route),
             )),
-            Line::from(departure.headsign.as_str()),
-            Line::from(departure.stop.code.as_deref().unwrap_or_default()).dim(),
-            Line::from(time).right_aligned(),
-            // About to leave: in amber, like the LED boards.
-            if minutes < 2 {
-                countdown.fg(AMBER)
-            } else {
-                countdown
-            },
-        ])
+            Line::from(departure.headsign),
+            Line::from(code.unwrap_or_default()).dim(),
+            Line::from(format!("{approximate}{time}")).right_aligned(),
+        ];
+        if tracked {
+            cells.push(delay(departure.live));
+        }
+        // About to leave: in amber, like the LED boards.
+        cells.push(if minutes < 2 {
+            countdown.fg(AMBER)
+        } else {
+            countdown
+        });
+        if tracked {
+            cells.push(Line::from(whereabouts(departure.live)).dim());
+        }
+        Row::new(cells)
     });
-    let widths = [
+    let mut widths = vec![
         Constraint::Length(u16::try_from(width + 2).unwrap_or(u16::MAX)),
         Constraint::Fill(1),
         Constraint::Length(3),
         Constraint::Length(6),
-        Constraint::Length(6),
     ];
+    if tracked {
+        widths.push(Constraint::Length(3));
+    }
+    widths.push(Constraint::Length(6));
+    if tracked {
+        // "10 stops away"
+        widths.push(Constraint::Length(13));
+    }
     Table::new(rows, widths).column_spacing(2)
+}
+
+/// How late a tracked vehicle runs, in whole minutes: `+2`, `−1`, or `●` when on time.
+fn delay(live: Option<Live>) -> Line<'static> {
+    let Some(live) = live else {
+        return Line::default();
+    };
+    match late_by(live) {
+        0 => Line::from("●".fg(ON_TIME)),
+        minutes @ 1.. => Line::from(format!("+{minutes}").fg(LATE)),
+        minutes => Line::from(format!("−{}", -minutes).fg(ON_TIME)),
+    }
 }
 
 /// A line's own colours (red trams, purple buses…), or inverted text without them.
@@ -396,12 +471,14 @@ fn badge(route: &Route) -> Style {
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "the parts of the app it draws")]
 fn draw_search(
     frame: &mut Frame,
     feed: &Feed,
     query: &str,
     matches: &[&StopGroup],
     selected: &mut ListState,
+    status: &str,
     body: Rect,
     footer: Rect,
 ) {
@@ -419,6 +496,8 @@ fn draw_search(
         let hint = Paragraph::new(vec![
             Line::from("Type a stop name. Typos and missing Polish letters are fine:"),
             Line::from("plac narutowicza, dworzec centralny, metro politechnika…"),
+            Line::default(),
+            Line::from("Timetable: ZTM Warszawa. Vehicle positions: the City of Warsaw."),
         ]);
         frame.render_widget(hint.dim(), list);
     } else if matches.is_empty() {
@@ -442,7 +521,7 @@ fn draw_search(
     }
 
     let keys = [("↑↓", "choose"), ("enter", "departures"), ("esc", "quit")];
-    draw_footer(frame, footer, &keys, "data: ZTM Warszawa");
+    draw_footer(frame, footer, &keys, status);
 }
 
 /// Keys and what they do on the left, `status` on the right if there is room for it.
@@ -463,24 +542,18 @@ mod film;
 
 #[cfg(test)]
 mod tests {
-    use jiff::civil::date;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Modifier};
 
     use super::*;
+    use crate::fixtures::{FRIDAY, MONDAY, at, feed, late_tram};
 
-    fn feed() -> Feed {
-        Feed::open(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../odjazd-core/tests/fixtures/mini"
-        ))
-        .unwrap()
-    }
-
-    fn friday(feed: &Feed, hour: i8, minute: i8) -> Zoned {
-        date(2026, 10, 30)
-            .at(hour, minute, 0, 0)
-            .to_zoned(feed.timezone().clone())
-            .unwrap()
+    /// The app with the timetable of `day` read, as the background thread leaves it.
+    fn app<'f>(feed: &'f Feed, groups: &'f [StopGroup], day: Date) -> (App<'f>, Receiver<()>) {
+        let (refresh, asked) = mpsc::channel();
+        let mut app = App::new(feed, groups, refresh, false);
+        let timetable = Timetable::build(feed, day).unwrap();
+        app.receive(News::Timetable(Arc::new(timetable)));
+        (app, asked)
     }
 
     /// What the app draws at `now` on a `width`×`height` terminal.
@@ -510,25 +583,15 @@ mod tests {
 
     #[test]
     fn board_counts_down_to_each_departure() {
-        let feed = feed();
+        let feed = feed("mini");
         let groups = feed.stop_groups();
-        let (requests, inbox) = mpsc::channel();
-        let mut app = App::new(&feed, &groups, requests);
+        let (mut app, _) = app(&feed, &groups, FRIDAY);
+        app.offline = true;
         app.search_for("plac testowy");
         app.open(0);
 
-        // Opening a stop asks the worker for its departures; here we answer ourselves.
-        let group = inbox.try_recv().unwrap();
-        let now = friday(&feed, 9, 55);
-        let departures = feed.departures(&group.stops, &now, LIMIT).unwrap();
-        app.receive(Answer {
-            group,
-            at: now.timestamp(),
-            departures: Ok(departures),
-        });
-
-        let later = now.checked_add(SignedDuration::from_secs(12)).unwrap();
-        let screen = draw(&mut app, &later, 56, 8);
+        let now = at(&feed, FRIDAY, 9, 55, 12);
+        let screen = draw(&mut app, &now, 56, 8);
         assert_eq!(
             rows(&screen),
             [
@@ -539,7 +602,7 @@ mod tests {
                 " N1   Końcowa                        02    00:05",
                 "",
                 "",
-                "esc search  r refresh  q quit           updated 12 s ago",
+                "esc search  r refresh  q quit             timetable only",
             ]
         );
         // Only the clock and the status are dimmed, not the stop or the keys beside them.
@@ -547,44 +610,46 @@ mod tests {
         assert!(!dim(0, 0) && dim(55, 0));
         assert!(!dim(0, 7) && dim(55, 7));
         // Where the status does not fit beside the keys, it is left out.
-        let narrow = rows(&draw(&mut app, &later, 40, 8));
+        let narrow = rows(&draw(&mut app, &now, 40, 8));
         assert_eq!(narrow[7], "esc search  r refresh  q quit");
     }
 
     #[test]
-    fn a_stale_board_asks_again() {
-        let feed = feed();
+    fn a_tracked_vehicle_shows_its_delay_and_where_it_is() {
+        let feed = feed("commute");
         let groups = feed.stop_groups();
-        let (requests, inbox) = mpsc::channel();
-        let mut app = App::new(&feed, &groups, requests);
-        app.search_for("plac testowy");
+        let (mut app, _) = app(&feed, &groups, MONDAY);
+        app.search_for("dom");
         app.open(0);
-        let group = inbox.try_recv().unwrap();
-        let now = friday(&feed, 9, 55);
-        app.receive(Answer {
-            group,
-            at: now.timestamp(),
-            departures: Ok(Vec::new()),
-        });
+        let now = at(&feed, MONDAY, 7, 58, 0);
+        let timetable = Arc::clone(app.timetable.as_ref().unwrap());
+        app.receive(News::Live(Ok(late_tram(&timetable, now.timestamp()))));
 
-        app.refresh_if_stale(&now.checked_add(SignedDuration::from_secs(29)).unwrap());
-        assert!(inbox.try_recv().is_err());
-        app.refresh_if_stale(&now.checked_add(REFRESH).unwrap());
-        assert_eq!(inbox.try_recv().unwrap().name, "Pl. Testowy");
-        // Until the answer comes, the board does not ask again.
-        app.refresh_if_stale(&now.checked_add(REFRESH * 2).unwrap());
-        assert!(inbox.try_recv().is_err());
+        let screen = rows(&draw(&mut app, &now, 72, 7));
+        // The tram counts down to when it will come, not to its time in the timetable.
+        assert_eq!(
+            screen[2..5],
+            [
+                "  1    Praca                     01    08:00  +2    4 min  1 stop away",
+                " 100   Praca                     02    08:05        7 min",
+                "  1    Praca                     01    08:10       12 min",
+            ]
+        );
+        assert!(screen[6].ends_with("live, positions 0 s old"), "{screen:?}");
+        // Positions from long ago say nothing about now.
+        let later = now.checked_add(STALE).unwrap();
+        let screen = rows(&draw(&mut app, &later, 72, 7));
+        assert!(screen[6].ends_with("finding the vehicles…"), "{screen:?}");
     }
 
     #[test]
     fn typing_narrows_the_stops_and_enter_opens_one() {
-        let feed = feed();
+        let feed = feed("mini");
         let groups = feed.stop_groups();
-        let (requests, inbox) = mpsc::channel();
-        let mut app = App::new(&feed, &groups, requests);
+        let (mut app, _) = app(&feed, &groups, FRIDAY);
         type_in(&mut app, "centrm");
 
-        let screen = rows(&draw(&mut app, &friday(&feed, 12, 0), 40, 8));
+        let screen = rows(&draw(&mut app, &at(&feed, FRIDAY, 12, 0, 0), 40, 8));
         assert_eq!(
             screen[2..6],
             [
@@ -597,12 +662,23 @@ mod tests {
 
         app.key(KeyCode::Down.into());
         app.key(KeyCode::Enter.into());
-        assert_eq!(inbox.try_recv().unwrap().name, "Centrum (Łomianki)");
+        assert_eq!(app.board.as_ref().unwrap().group.name, "Centrum (Łomianki)");
         // Tab moves on to the next match; Esc goes back to the search, still filled in.
         app.key(KeyCode::Tab.into());
-        assert_eq!(inbox.try_recv().unwrap().name, "Centrum (Warszawa)");
+        assert_eq!(app.board.as_ref().unwrap().group.name, "Centrum (Warszawa)");
         app.key(KeyCode::Esc.into());
         assert!(app.board.is_none());
         assert_eq!(app.query, "centrm");
+    }
+
+    #[test]
+    fn r_asks_for_fresh_positions() {
+        let feed = feed("mini");
+        let groups = feed.stop_groups();
+        let (mut app, asked) = app(&feed, &groups, FRIDAY);
+        app.search_for("plac testowy");
+        app.open(0);
+        app.key(KeyCode::Char('r').into());
+        assert!(asked.try_recv().is_ok());
     }
 }

@@ -14,6 +14,10 @@ pub type StopIdx = usize;
 
 /// A single pole or platform where vehicles stop (`location_type` 0 in GTFS).
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "cache",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct Stop {
     pub id: String,
     pub name: String,
@@ -37,6 +41,10 @@ impl Stop {
 
 /// A line, e.g. tram `15` or metro `M1`.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "cache",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct Route {
     pub id: String,
     /// The name riders know the line by.
@@ -49,6 +57,10 @@ pub struct Route {
 
 /// What runs on a line, from GTFS `route_type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "cache",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum RouteKind {
     Metro,
     Tram,

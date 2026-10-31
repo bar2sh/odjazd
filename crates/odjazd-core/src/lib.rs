@@ -30,6 +30,8 @@
 //! [GTFS]: https://gtfs.org/documentation/schedule/reference/
 
 mod board;
+#[cfg(feature = "cache")]
+mod cache;
 mod calendar;
 mod error;
 mod feed;

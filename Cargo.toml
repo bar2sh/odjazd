@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,3 +10,9 @@ repository = "https://github.com/bar2sh/odjazd"
 
 [workspace.dependencies]
 odjazd-core = { path = "crates/odjazd-core", version = "0.1.0" }
+
+# For the WebAssembly build of the map page: smaller and faster to download.
+[profile.wasm]
+inherits = "release"
+lto = true
+codegen-units = 1

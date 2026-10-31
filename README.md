@@ -38,11 +38,21 @@
 - **Which pole to walk to.** `odjazd route` plans a journey from every pole within walking
   distance, live delays included, and tells you where to go and when to leave. In the web
   app, set Home and Work and the plans are one tap away.
+- **In the browser, too.** On the [map page](https://bar2sh.github.io/odjazd/), pick a
+  pole and its departures come up, worked out in your browser by the same engine compiled
+  to WebAssembly.
+- **Quick.** A board, live delays included, is on screen in a tenth of a second: the
+  timetable is worked out once a day and read back in milliseconds.
 - **One small binary.** No runtime, no account, no API key.
 
 ## Install
 
-You need a recent stable Rust ([rustup.rs](https://rustup.rs)).
+Download the archive for your system from the
+[latest release](https://github.com/bar2sh/odjazd/releases/latest): macOS (Apple silicon
+or Intel), Linux or Windows. Unpack it and put `odjazd` on your `PATH`. macOS may block
+the unsigned binary at first; `xattr -d com.apple.quarantine odjazd` clears that.
+
+Or build it with a recent stable Rust ([rustup.rs](https://rustup.rs)):
 
 ```bash
 cargo install --git https://github.com/bar2sh/odjazd odjazd
@@ -147,24 +157,19 @@ for an app many people use, so before putting it online, point `TILES` in
 ## How it works
 
 odjazd reads Warsaw's timetable as [GTFS](https://gtfs.org), the format behind transit
-directions in Google Maps: a zip of CSV tables.
+directions in Google Maps: a zip of CSV tables. Once a day it works out three days of
+trips from them, laid out for quick answers, and saves that; every board and journey
+starts from the saved copy.
 
 ```mermaid
 flowchart TB
-    subgraph update ["odjazd update"]
-        direction LR
-        feed["GTFS feed<br/>108 MB zip"] --> cache[("tables unpacked<br/>in the cache")]
-    end
-    subgraph query ["odjazd plac narutowicza"]
-        direction LR
-        small["stops · lines<br/>calendar"] --> search["stop search<br/>→ Pl. Narutowicza"]
-        search --> scan["stop_times.txt<br/>8 million rows, streamed"]
-        scan --> board["departures from three<br/>days' timetables"]
-    end
-    update --> query
+    feed["GTFS feed, 108 MB zip"] -->|odjazd update| tables[("tables unpacked in the cache")]
+    tables -->|"once a day, in about a second"| saved[("three days of trips<br/>saved with rkyv, about 30 MB")]
+    saved -->|read back in 27 ms| answer["boards and journeys"]
+    gps["vehicle positions, every 10–20 s"] -->|how late each trip runs| answer
 ```
 
-The web app keeps the timetable in memory instead, and follows the vehicles as they go:
+The web app keeps the same timetable in memory, and follows the vehicles as they go:
 
 ```mermaid
 flowchart LR
@@ -193,22 +198,40 @@ A few details make this harder than it looks:
   how far, compares that with when the timetable says it should be there, and carries the
   difference over to the stops ahead. A tram waiting at a stop ahead of time is not early;
   one that has passed your stop is gone, whatever the timetable says.
-- **Which pole to walk to** is a journey-planning question. The web app keeps three days
-  of the timetable in memory, laid out for [RAPTOR](https://www.microsoft.com/en-us/research/publication/round-based-public-transit-routing/)
-  (Delling, Pajor, Werneck), and runs it from every pole within walking distance, with
-  live delays: a late tram can make the bus across the street the better choice.
-- **Speed.** Most of the 8 million rows belong to other days. Trips are looked up once
-  per trip rather than once per row, so those rows are skipped after a single comparison.
-  Trimming whitespace in every CSV field took two thirds of the run time, so only the
-  fields in use are trimmed. That makes a day's timetable in about a second on an Apple
-  M-series laptop. odjazd saves it with [rkyv](https://rkyv.org) and reads it back in
-  milliseconds, so a board, live delays included, is there in a tenth of a second.
+- **Which pole to walk to** is a journey-planning question. The trips are laid out for
+  [RAPTOR](https://www.microsoft.com/en-us/research/publication/round-based-public-transit-routing/)
+  (Delling, Pajor, Werneck), which odjazd runs from every pole within walking distance,
+  with live delays: a late tram can make the bus across the street the better choice.
+- **Most of `stop_times.txt` is for other days.** Of its 8 million rows, odjazd looks
+  each trip up once rather than once per row, so the rest are skipped after a single
+  comparison. Trimming whitespace in every CSV field took two thirds of the time, so only
+  the fields in use are trimmed. Then [rkyv](https://rkyv.org) saves the result in binary
+  form, which is checked and read back in milliseconds instead.
+
+### How fast
+
+On an Apple M-series laptop, with Warsaw's timetable for 8:15 on a Monday:
+
+| | |
+|---|---|
+| Open the feed: stops, lines and calendar | 6.6 ms |
+| Work out three days of trips | 1.1 s |
+| Read them back from the saved copy | 27 ms |
+| Find a stop by name, among 2,883 | 0.27 ms |
+| A board: the next 12 departures from Centrum's 10 poles | 0.10 ms |
+| A journey: Pl. Narutowicza → Dw. Wileński, from the 40 nearest poles | 84 ms |
+| Where 1,596 buses and trams are along their trips, and how late | 1.1 ms |
+
+`cargo bench -p odjazd-core --features cache` measures these with
+[criterion](https://crates.io/crates/criterion), on the timetable `odjazd update`
+downloaded. The vehicles are put where the timetable says they are, so the numbers do not
+depend on when it runs.
 
 The code is split into four crates, the map page and the task that builds it:
 
 | Part | What it does |
 |---|---|
-| [`odjazd-core`](crates/odjazd-core) | GTFS and GTFS-Realtime parsing, stop search, departures, live delays, journey planning. No networking or terminal I/O, so it can be compiled to WebAssembly. |
+| [`odjazd-core`](crates/odjazd-core) | GTFS and GTFS-Realtime parsing, stop search, departures, live delays, journey planning, and the timetable in binary form. No networking or terminal I/O, so it can be compiled to WebAssembly. |
 | [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours, journeys and the live board. |
 | [`odjazd-web`](crates/odjazd-web) | The web app and its JSON API: keeps the timetable fresh, follows vehicle positions, serves the PWA. |
 | [`odjazd-wasm`](crates/odjazd-wasm) | odjazd-core for the browser, through wasm-bindgen: stop search, boards and every pole for the map, from the timetable in binary form. |
@@ -216,13 +239,12 @@ The code is split into four crates, the map page and the task that builds it:
 | [`xtask`](xtask) | `cargo xtask site`, which builds the map page and the timetable it loads. |
 
 Built with [clap](https://crates.io/crates/clap), [csv](https://crates.io/crates/csv) +
-[serde](https://serde.rs), [jiff](https://crates.io/crates/jiff),
+[serde](https://serde.rs), [jiff](https://crates.io/crates/jiff), [rkyv](https://rkyv.org),
 [ratatui](https://ratatui.rs), [ureq](https://crates.io/crates/ureq),
 [zip](https://crates.io/crates/zip), [anstream](https://crates.io/crates/anstream) and
 [prost](https://crates.io/crates/prost); the web app with [axum](https://crates.io/crates/axum)
 on [tokio](https://tokio.rs), and [Leaflet](https://leafletjs.com) for its map; the map page with
-[rkyv](https://rkyv.org), [wasm-bindgen](https://crates.io/crates/wasm-bindgen) and
-[MapLibre GL JS](https://maplibre.org).
+[wasm-bindgen](https://crates.io/crates/wasm-bindgen) and [MapLibre GL JS](https://maplibre.org).
 
 ## Development
 
@@ -241,6 +263,7 @@ update` and at a busy hour, since they show where the vehicles are:
 ```bash
 cargo build --release && python3 docs/demo.py swietokrzyska
 cargo test -p odjazd --release -- --ignored readme_animation   # docs/tui.svg, 3 minutes
+cargo bench -p odjazd-core --features cache                     # the table above, 2 minutes
 ```
 
 The map page builds with `cargo xtask site` into `target/site`, from the feed `odjazd

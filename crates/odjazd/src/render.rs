@@ -145,8 +145,9 @@ pub fn journeys(
         Some(ride) if to.stops.contains(&ride.to) => ride.arrival,
         _ => journey.arrive,
     };
-    // A journey is not worth showing if another gets there no later with no more changes,
-    // unless it lets you set off a good while later. All to the minute, as shown.
+    // The planner leaves out journeys that another one beats on every count, to the second.
+    // Shown to the minute, a journey is not worth it either if another gets there no later
+    // with no more changes, unless it lets you set off a good while later.
     let beats = |one: &Journey, other: &Journey| {
         let (one_there, other_there) = (minute(there(one)), minute(there(other)));
         let (one_leave, other_leave) = (minute(one.leave), minute(other.leave));

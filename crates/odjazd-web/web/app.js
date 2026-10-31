@@ -363,6 +363,9 @@ function renderPlan(kind) {
 /** Whether a plan's destination is less than a minute's walk away. */
 const arrived = (data) => data.walk != null && data.walk.distance < 60;
 
+/** Minutes since 1970, to tell times apart as the clock shows them. */
+const minute = (t) => Math.floor(t / 60);
+
 function renderBest(option, kind, eyebrow) {
   const start = option.start;
   const ride = option.legs.find((leg) => leg.kind === 'ride');
@@ -395,14 +398,15 @@ function renderOption(option, i, kind, best) {
     .filter((leg) => leg.kind === 'ride')
     .map((leg) => fmt.badge(leg.route, 'badge--sm'))
     .join('');
-  const later = Math.round((option.arrive - best.arrive) / 60);
+  const later = minute(option.arrive) - minute(best.arrive);
   return `<li class="opt">
     <button class="opt-row" type="button" data-act="option" data-kind="${kind}" data-i="${i}" aria-expanded="${open}">
       <span class="code code--sm">${esc(start.code ?? '—')}</span>
       <span>
         <span class="name">${esc(start.name)}</span>
         <span class="sub"><span class="lines">${lines}</span>
-          <span>${fmt.minutes(start.walk)} pieszo · ${fmt.transfers(option.transfers)}</span></span>
+          <span class="info"><span class="leave"><span>Wyjdź</span> <b data-leave="${option.leave}"></b></span>&nbsp;·
+            <span>${fmt.minutes(start.walk)} pieszo</span>&nbsp;· <span>${fmt.transfers(option.transfers)}</span></span></span>
       </span>
       <span class="opt-arrive"><span class="v">${fmt.hhmm(option.arrive)}</span>
         <span class="k">${later > 0 ? `+${later} min` : 'tak samo'}</span></span>

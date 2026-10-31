@@ -16,6 +16,6 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dirs = "7.0.0"
 jiff = "0.2.38"
-odjazd-core.workspace = true
+odjazd-core = { workspace = true, features = ["cache"] }
 ratatui = "0.30.2"
 ureq = "3.5.0"

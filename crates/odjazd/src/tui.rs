@@ -6,6 +6,7 @@
 //! there at once and the clock never stalls.
 
 use std::{
+    path::{Path, PathBuf},
     sync::{
         Arc,
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -15,7 +16,7 @@ use std::{
 };
 
 use anyhow::Result;
-use jiff::{SignedDuration, Zoned, civil::Date};
+use jiff::{SignedDuration, Zoned, civil::Date, tz::TimeZone};
 use odjazd_core::{
     Feed, Live, Route, StopGroup, Timetable, realtime::Realtime, search, timetable::Departure,
 };
@@ -65,15 +66,14 @@ const WIDTH: u16 = 80;
 
 /// Runs the live board until the user quits, opening the board of `stop` if given. With
 /// `offline`, the times are the timetable's and the vehicles are not followed.
-pub fn run(feed: Feed, stop: Option<&str>, offline: bool) -> Result<()> {
-    let feed = Arc::new(feed);
+pub fn run(feed: Feed, data_dir: PathBuf, stop: Option<&str>, offline: bool) -> Result<()> {
     let groups = feed.stop_groups();
     let (news, inbox) = mpsc::channel();
     let (refresh, asked) = mpsc::channel();
     // Not joined: quitting should not wait for a download to time out.
     thread::spawn({
-        let feed = Arc::clone(&feed);
-        move || follow(&feed, offline, &asked, &news)
+        let timezone = feed.timezone().clone();
+        move || follow(&timezone, &data_dir, offline, &asked, &news)
     });
     let mut app = App::new(&feed, &groups, refresh, offline);
     if let Some(stop) = stop {
@@ -95,13 +95,19 @@ enum News {
 
 /// Reads the timetable, then follows the vehicles: downloads their positions every
 /// `FOLLOW`, or sooner when asked, until the app quits.
-fn follow(feed: &Feed, offline: bool, asked: &Receiver<()>, news: &Sender<News>) {
+fn follow(
+    timezone: &TimeZone,
+    data_dir: &Path,
+    offline: bool,
+    asked: &Receiver<()>,
+    news: &Sender<News>,
+) {
     let mut read: Option<(Date, Arc<Timetable>)> = None;
     let mut realtime = Realtime::default();
     loop {
-        let today = Zoned::now().with_time_zone(feed.timezone().clone()).date();
+        let today = Zoned::now().with_time_zone(timezone.clone()).date();
         if read.as_ref().is_none_or(|&(day, _)| day != today) {
-            let timetable = match Timetable::build(feed, today) {
+            let timetable = match crate::timetable(data_dir, today) {
                 Ok(timetable) => Arc::new(timetable),
                 Err(error) => {
                     let error = format!("cannot read the timetable ({error}); try `odjazd update`");

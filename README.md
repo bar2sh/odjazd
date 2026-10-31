@@ -107,7 +107,10 @@ changes, are left out.
 ### Where the timetable lives
 
 The timetable lives in the system cache directory (`~/Library/Caches/odjazd` on macOS,
-`~/.cache/odjazd` on Linux). Set `ODJAZD_DATA_DIR` to keep it somewhere else.
+`~/.cache/odjazd` on Linux): the feed as downloaded, and today's timetable worked out
+from it, saved in binary form. Working it out takes about a second, once a day or right
+after `odjazd update`; reading it back takes milliseconds. Set `ODJAZD_DATA_DIR` to keep
+it all somewhere else.
 
 ## In the browser
 
@@ -197,8 +200,9 @@ A few details make this harder than it looks:
 - **Speed.** Most of the 8 million rows belong to other days. Trips are looked up once
   per trip rather than once per row, so those rows are skipped after a single comparison.
   Trimming whitespace in every CSV field took two thirds of the run time, so only the
-  fields in use are trimmed. A board takes about a second on an Apple M-series laptop,
-  while the vehicle positions download alongside.
+  fields in use are trimmed. That makes a day's timetable in about a second on an Apple
+  M-series laptop. odjazd saves it with [rkyv](https://rkyv.org) and reads it back in
+  milliseconds, so a board, live delays included, is there in a tenth of a second.
 
 The code is split into four crates, the map page and the task that builds it:
 

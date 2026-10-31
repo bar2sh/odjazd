@@ -1,0 +1,25 @@
+[package]
+name = "odjazd-wasm"
+description = "odjazd-core compiled to WebAssembly: stop search and departure boards in the browser"
+keywords = ["gtfs", "transit", "warsaw", "wasm"]
+categories = ["wasm"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+brotli-decompressor = "6.2.0"
+console_error_panic_hook = "0.1.7"
+jiff = "0.2.38"
+odjazd-core = { workspace = true, features = ["cache"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde-wasm-bindgen = "0.6.5"
+wasm-bindgen = "0.2.130"
+
+[dev-dependencies]
+brotli = "9.1.1"

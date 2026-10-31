@@ -1,0 +1,3 @@
+[alias]
+# Optimised: building the timetable and compressing it take minutes in a debug build.
+xtask = "run --quiet --release --package xtask --"

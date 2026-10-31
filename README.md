@@ -109,6 +109,16 @@ changes, are left out.
 The timetable lives in the system cache directory (`~/Library/Caches/odjazd` on macOS,
 `~/.cache/odjazd` on Linux). Set `ODJAZD_DATA_DIR` to keep it somewhere else.
 
+## In the browser
+
+[bar2sh.github.io/odjazd](https://bar2sh.github.io/odjazd/) is odjazd with nothing to
+install. Search for a stop, or pick a pole on the map, and its next departures come up on
+the amber board. No server works them out: `odjazd-core` runs in your browser, compiled
+to WebAssembly, on a timetable that GitHub Actions builds every night. Yesterday, today
+and tomorrow come in one file of 2–3.5 MB, saved in binary form with
+[rkyv](https://rkyv.org), which a laptop loads in under half a second. The page goes by
+the timetable alone; for live delays, use the command line or the web app.
+
 ## Web app
 
 `odjazd-web` puts the same engine on your phone. It finds the poles nearest to you, each
@@ -190,20 +200,25 @@ A few details make this harder than it looks:
   fields in use are trimmed. A board takes about a second on an Apple M-series laptop,
   while the vehicle positions download alongside.
 
-The code is split into three crates:
+The code is split into four crates, the map page and the task that builds it:
 
-| Crate | What it does |
+| Part | What it does |
 |---|---|
 | [`odjazd-core`](crates/odjazd-core) | GTFS and GTFS-Realtime parsing, stop search, departures, live delays, journey planning. No networking or terminal I/O, so it can be compiled to WebAssembly. |
 | [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours, journeys and the live board. |
 | [`odjazd-web`](crates/odjazd-web) | The web app and its JSON API: keeps the timetable fresh, follows vehicle positions, serves the PWA. |
+| [`odjazd-wasm`](crates/odjazd-wasm) | odjazd-core for the browser, through wasm-bindgen: stop search, boards and every pole for the map, from the timetable in binary form. |
+| [`site`](site) | The map page: HTML, CSS and JavaScript around odjazd-wasm, with a MapLibre map. |
+| [`xtask`](xtask) | `cargo xtask site`, which builds the map page and the timetable it loads. |
 
 Built with [clap](https://crates.io/crates/clap), [csv](https://crates.io/crates/csv) +
 [serde](https://serde.rs), [jiff](https://crates.io/crates/jiff),
 [ratatui](https://ratatui.rs), [ureq](https://crates.io/crates/ureq),
 [zip](https://crates.io/crates/zip), [anstream](https://crates.io/crates/anstream) and
 [prost](https://crates.io/crates/prost); the web app with [axum](https://crates.io/crates/axum)
-on [tokio](https://tokio.rs), and [Leaflet](https://leafletjs.com) for the map.
+on [tokio](https://tokio.rs), and [Leaflet](https://leafletjs.com) for its map; the map page with
+[rkyv](https://rkyv.org), [wasm-bindgen](https://crates.io/crates/wasm-bindgen) and
+[MapLibre GL JS](https://maplibre.org).
 
 ## Development
 
@@ -224,13 +239,28 @@ cargo build --release && python3 docs/demo.py swietokrzyska
 cargo test -p odjazd --release -- --ignored readme_animation   # docs/tui.svg, 3 minutes
 ```
 
+The map page builds with `cargo xtask site` into `target/site`, from the feed `odjazd
+update` downloaded or from `--feed` (a directory or a zip). It needs the WebAssembly
+target and the wasm-bindgen CLI of the version in `Cargo.lock`, and says how to install
+whichever is missing:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo xtask site                          # about 30 s, most of it compressing the timetable
+python3 -m http.server -d target/site     # then open http://localhost:8000
+```
+
 ## Data
 
 The timetable comes from [Zarząd Transportu Miejskiego w Warszawie](https://ztm.waw.pl),
 converted to GTFS by [Mikołaj Kuranowski](https://mkuran.pl/gtfs/). Vehicle positions come
 from [Miasto Stołeczne Warszawa](http://api.um.warszawa.pl), matched to the timetable by
-Mikołaj Kuranowski. odjazd downloads both from there and does not redistribute them. The
-web app's map is © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors.
+Mikołaj Kuranowski. odjazd downloads both from there. The map page publishes a processed
+copy of three days of the timetable, as the
+[ZTM terms](https://www.ztm.waw.pl/pliki-do-pobrania/dane-rozkladowe/) allow: it names its
+sources and is rebuilt every night, so that it stays current. The maps are ©
+[OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, and the map page's
+tiles come from [OpenFreeMap](https://openfreemap.org).
 
 ## License
 

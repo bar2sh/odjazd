@@ -20,6 +20,20 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # odjazd-core runs in the browser too, so it must build without networking or a terminal.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --package odjazd-core --package odjazd-wasm --lib --target wasm32-unknown-unknown -- -D warnings
+      # Built with the rest of the workspace, odjazd-core gets the cache feature from odjazd-wasm; this checks it without.
+      - run: cargo clippy --locked --package odjazd-core --lib --target wasm32-unknown-unknown -- -D warnings
+
   test:
     strategy:
       matrix:

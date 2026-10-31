@@ -1,0 +1,66 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  # Every night, so that the page has the current timetable: ZTM publishes changes daily.
+  schedule:
+    - cron: "40 1 * * *"
+  workflow_dispatch:
+  # A pull request that changes the page builds it, but deploys nothing.
+  pull_request:
+    paths:
+      - .github/workflows/pages.yml
+      - Cargo.lock
+      - crates/odjazd-core/**
+      - crates/odjazd-wasm/**
+      - site/**
+      - xtask/**
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # The wasm-bindgen CLI must be the version of the wasm-bindgen crate in Cargo.lock.
+      - name: Find the wasm-bindgen version
+        run: |
+          version=$(awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)
+          echo "WASM_BINDGEN=$version" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ env.WASM_BINDGEN }}
+      - name: Download the timetable
+        run: curl --fail --silent --show-error --location --retry 3 --output warsaw.zip https://mkuran.pl/gtfs/warsaw.zip
+      - run: cargo xtask site --feed warsaw.zip
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    # A deploy that started finishes; a newer one waits for it.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -10,12 +10,14 @@
 //! To answer "which pole near me should I walk to?", [`Timetable::plan`] runs a search
 //! from each pole near the start and compares where each one gets you.
 
+use std::cmp::Reverse;
+
 use jiff::Timestamp;
 
 use crate::{
     LatLon, StopIdx, Timetable, TripIdx,
     geo::walking_time,
-    realtime::{MAX_DELAY_S, Realtime, Status},
+    realtime::{Realtime, Status},
     timetable::{Live, Pattern},
 };
 
@@ -43,6 +45,10 @@ const MAX_WALK_S: u32 = 40 * 60;
 /// Options arriving later than this after the best one are not worth showing.
 const MAX_LATER_S: i64 = 30 * 60;
 
+/// Setting off this many minutes later, on a journey that takes no longer, is worth getting
+/// there later.
+const LATER_MIN: i64 = 5;
+
 const MAX_OPTIONS: usize = 6;
 
 const UNREACHED: u32 = u32::MAX;
@@ -50,10 +56,8 @@ const UNREACHED: u32 = u32::MAX;
 /// Ways to get from one point to another.
 #[derive(Debug, Clone)]
 pub struct Plan {
-    /// At most one journey per starting pole, soonest arrival first. Each one offers
-    /// something the others don't, such as a later start or fewer changes: a journey that
-    /// sets off no later than another, arrives no sooner and has no fewer changes is left
-    /// out.
+    /// At most one journey per starting pole, soonest arrival first, each one
+    /// [worth showing](worth_showing) after the ones before it.
     pub options: Vec<Journey>,
     /// Walking all the way, when that is not too far.
     pub walk: Option<Walk>,
@@ -123,23 +127,62 @@ impl Journey {
             _ => 0,
         }
     }
+}
 
-    /// Whether this journey is the better one whatever you care about: it sets off no
-    /// earlier, arrives no later and changes no more often than `other`, and differs from
-    /// it in at least one of those.
-    fn beats(&self, other: &Journey) -> bool {
-        let mine = (self.leave, self.arrive, self.transfers());
-        let theirs = (other.leave, other.arrive, other.transfers());
-        mine.0 >= theirs.0 && mine.1 <= theirs.1 && mine.2 <= theirs.2 && mine != theirs
+/// The journeys worth showing, best first: soonest `arrival` (when each one gets there),
+/// then fewest changes, then latest start, all to the minute, as a clock shows them.
+/// Compared with any journey before it, each one has fewer changes, or lets you set off at
+/// least five minutes later and takes no longer. The others are left out.
+///
+/// Each journey is compared with the ones kept, not with all of them: otherwise a journey
+/// that is left out could leave out another one that is worth showing.
+pub fn worth_showing(
+    journeys: &[Journey],
+    arrival: impl Fn(&Journey) -> Timestamp,
+) -> Vec<&Journey> {
+    let minute = |time: Timestamp| time.as_second().div_euclid(60);
+    let key = |journey: &Journey| {
+        let there = minute(arrival(journey));
+        (there, journey.transfers(), Reverse(minute(journey.leave)))
+    };
+    let mut sorted: Vec<&Journey> = journeys.iter().collect();
+    sorted.sort_by_key(|&journey| (key(journey), Reverse(journey.leave), journey.first_walk()));
+    let mut kept: Vec<&Journey> = Vec::new();
+    for journey in sorted {
+        let (there, changes, Reverse(leave)) = key(journey);
+        let covered = kept.iter().any(|&other| {
+            let (other_there, other_changes, Reverse(other_leave)) = key(other);
+            let later =
+                leave >= other_leave + LATER_MIN && there - leave <= other_there - other_leave;
+            other_there <= there && other_changes <= changes && !later
+        });
+        if !covered {
+            kept.push(journey);
+        }
     }
+    kept
 }
 
 impl Timetable {
     /// The fastest journey from each pole near `from` to `to`, setting off at `at`, using
     /// live delays from `live`. Of journeys arriving within a few minutes of each other,
-    /// the one with fewer changes wins, and journeys that another one beats on every count
-    /// are left out.
+    /// the one with fewer changes wins, and only the ones [worth showing](worth_showing)
+    /// are kept.
     pub fn plan(&self, from: LatLon, to: LatLon, at: Timestamp, live: &Realtime) -> Plan {
+        self.plan_by(from, to, at, live, |journey| journey.arrive)
+    }
+
+    /// Like [`plan`](Self::plan), with `arrival` telling when each journey gets there, to
+    /// choose the ones worth showing: for a stop asked for by name, say, getting off at any
+    /// of its poles.
+    pub fn plan_by(
+        &self,
+        from: LatLon,
+        to: LatLon,
+        at: Timestamp,
+        live: &Realtime,
+        arrival: impl Fn(&Journey) -> Timestamp,
+    ) -> Plan {
         let direct = from.distance(to);
         let walk = Some(Walk {
             from: None,
@@ -167,7 +210,7 @@ impl Timetable {
             .take(MAX_STARTS)
             .filter_map(|(stop, distance)| {
                 let access = walking_time(distance);
-                let (round, last, arrival) = search.run(stop, start + access)?;
+                let (round, last, arrived) = search.run(stop, start + access)?;
                 let mut legs = vec![Leg::Walk(Walk {
                     from: None,
                     to: Some(stop),
@@ -187,7 +230,7 @@ impl Timetable {
                         Leg::Ride(ride) => Some(ride.departure),
                         Leg::Walk(_) => None,
                     })? - jiff::SignedDuration::from_secs(access.into()),
-                    arrive: self.timestamp(arrival),
+                    arrive: self.timestamp(arrived),
                     legs,
                 };
                 Some(journey)
@@ -197,26 +240,17 @@ impl Timetable {
         // Catching the same vehicle at two poles: keep the one that lets you leave later.
         options.sort_by_key(|journey| {
             let first = journey.rides().next().map(|ride| ride.trip);
-            (
-                first,
-                std::cmp::Reverse(journey.leave),
-                journey.first_walk(),
-            )
+            (first, Reverse(journey.leave), journey.first_walk())
         });
         options.dedup_by_key(|journey| journey.rides().next().map(|ride| ride.trip));
-        // Setting off earlier to arrive later, with as many changes, is no choice at all.
-        let beaten: Vec<bool> = options
-            .iter()
-            .map(|journey| options.iter().any(|other| other.beats(journey)))
-            .collect();
-        let mut options: Vec<Journey> = options
+        // Before cutting the list short, so that near copies of one journey take no places.
+        let mut options: Vec<Journey> = worth_showing(&options, &arrival)
             .into_iter()
-            .zip(beaten)
-            .filter_map(|(journey, beaten)| (!beaten).then_some(journey))
+            .cloned()
             .collect();
-        options.sort_by_key(|journey| (journey.arrive, journey.transfers(), journey.first_walk()));
-        if let Some(best) = options.first().map(|journey| journey.arrive) {
-            options.retain(|journey| journey.arrive.as_second() - best.as_second() <= MAX_LATER_S);
+        if let Some(best) = options.first().map(&arrival) {
+            options
+                .retain(|journey| arrival(journey).as_second() - best.as_second() <= MAX_LATER_S);
         }
         options.truncate(MAX_OPTIONS);
         Plan { options, walk }
@@ -238,6 +272,20 @@ fn merge_walks(legs: Vec<Leg>) -> Vec<Leg> {
         }
     }
     merged
+}
+
+/// Per pattern, the most any of its tracked trips runs late, in seconds.
+fn lateness(timetable: &Timetable, live: &Realtime) -> Vec<u32> {
+    let mut late = vec![0; timetable.patterns.len()];
+    for vehicle in &live.vehicles {
+        if let (Some(trip), Some(progress)) = (vehicle.trip, vehicle.progress)
+            && let Some(trip) = timetable.trips.get(trip)
+        {
+            let delay = u32::try_from(progress.delay).unwrap_or(0);
+            late[trip.pattern] = late[trip.pattern].max(delay);
+        }
+    }
+    late
 }
 
 /// How a stop was reached.
@@ -285,6 +333,9 @@ struct Search<'t> {
     /// Per pattern, the first position to scan it from this round.
     queue: Vec<usize>,
     queued: Vec<usize>,
+    /// Per pattern, how late its latest tracked trip runs: no trip due to leave longer ago
+    /// than that can still be caught.
+    late: Vec<u32>,
 }
 
 impl<'t> Search<'t> {
@@ -301,6 +352,7 @@ impl<'t> Search<'t> {
             marked_stops: Vec::new(),
             queue: vec![usize::MAX; timetable.patterns.len()],
             queued: Vec::new(),
+            late: lateness(timetable, live),
         }
     }
 
@@ -430,7 +482,7 @@ impl<'t> Search<'t> {
             if current.is_some_and(|departure| departure <= ready) {
                 continue;
             }
-            if let Some((slot, delay, departure)) = self.catch(pattern, i, ready)
+            if let Some((slot, delay, departure)) = self.catch(pattern, self.late[p], i, ready)
                 && current.is_none_or(|current| departure < current)
             {
                 boarded = Some((slot, i, delay));
@@ -439,9 +491,16 @@ impl<'t> Search<'t> {
     }
 
     /// The trip leaving the `i`-th stop of `pattern` soonest at or after `ready`, live
-    /// delays included: slot, delay and departure.
-    fn catch(&self, pattern: &Pattern, i: usize, ready: u32) -> Option<(usize, i32, u32)> {
-        let earliest = ready.saturating_sub(MAX_DELAY_S as u32);
+    /// delays included: slot, delay and departure. None of its trips runs more than
+    /// `late` seconds late.
+    fn catch(
+        &self,
+        pattern: &Pattern,
+        late: u32,
+        i: usize,
+        ready: u32,
+    ) -> Option<(usize, i32, u32)> {
+        let earliest = ready.saturating_sub(late);
         let mut best: Option<(usize, i32, u32)> = None;
         for slot in pattern.first_departing(i, earliest)..pattern.trips.len() {
             let scheduled = pattern.departure(slot, i);
@@ -522,4 +581,62 @@ impl<'t> Search<'t> {
 /// `time` moved by `delay` seconds.
 fn shift(time: u32, delay: i32) -> u32 {
     (i64::from(time) + i64::from(delay)).clamp(0, i64::from(u32::MAX - 1)) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `minutes` and `seconds` past seven.
+    fn at(minutes: i64, seconds: i64) -> Timestamp {
+        Timestamp::from_second(1_800_000_000 + minutes * 60 + seconds).unwrap()
+    }
+
+    fn journey(leave: Timestamp, arrive: Timestamp, rides: usize) -> Journey {
+        let ride = Leg::Ride(Ride {
+            trip: 0,
+            from: 0,
+            to: 0,
+            departure: leave,
+            arrival: arrive,
+            scheduled: leave,
+            live: None,
+            stops: 1,
+        });
+        Journey {
+            legs: vec![ride; rides],
+            leave,
+            arrive,
+        }
+    }
+
+    #[test]
+    fn keeps_journeys_that_offer_something_the_ones_before_dont() {
+        let journeys = [
+            journey(at(0, 0), at(30, 0), 2),
+            // The same as the clock tells, setting off 20 s later: shown instead.
+            journey(at(0, 20), at(30, 40), 2),
+            // Three minutes later to get there two minutes later: not worth it.
+            journey(at(3, 0), at(32, 0), 2),
+            // Six minutes later, so worth it, though only three after the one left out.
+            journey(at(6, 0), at(35, 0), 2),
+            // Fifteen minutes later, but slower than the first: not worth it.
+            journey(at(15, 0), at(50, 0), 2),
+            // Later, but with no change.
+            journey(at(0, 0), at(38, 0), 1),
+            journey(at(1, 0), at(39, 0), 1),
+        ];
+        let shown: Vec<_> = worth_showing(&journeys, |journey| journey.arrive)
+            .into_iter()
+            .map(|journey| (journey.leave, journey.arrive))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (at(0, 20), at(30, 40)),
+                (at(6, 0), at(35, 0)),
+                (at(0, 0), at(38, 0))
+            ]
+        );
+    }
 }

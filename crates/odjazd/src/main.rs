@@ -127,19 +127,22 @@ fn main() -> Result<()> {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    let feed_dir = data_dir()?.join("feed");
+    let data_dir = data_dir()?;
     match cli.command {
-        Some(Command::Route(args)) => route(&open(&feed_dir)?, &args),
-        Some(Command::Stops { query }) => list_stops(&open(&feed_dir)?, &query),
-        Some(Command::Update { url }) => download::update(&url, &feed_dir),
+        Some(Command::Route(args)) => route(&data_dir, &args),
+        Some(Command::Stops { query }) => list_stops(&open(&data_dir)?, &query),
+        Some(Command::Update { url }) => update(&url, &data_dir),
         None => {
             let board = &cli.board;
             let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
             match &board.stop {
-                Some(stop) if !board.watch => show_board(&open(&feed_dir)?, stop, board),
-                stop if interactive => {
-                    tui::run(open(&feed_dir)?, stop.as_deref(), board.live.offline)
-                }
+                Some(stop) if !board.watch => show_board(&data_dir, stop, board),
+                stop if interactive => tui::run(
+                    open(&data_dir)?,
+                    data_dir,
+                    stop.as_deref(),
+                    board.live.offline,
+                ),
                 Some(_) => bail!("the live board needs a terminal; leave out --watch"),
                 None => Ok(Cli::command().print_help()?),
             }
@@ -167,10 +170,12 @@ fn data_dir() -> Result<PathBuf> {
 }
 
 /// Opens the downloaded timetable, downloading it first on the very first run.
-fn open(feed_dir: &Path) -> Result<Feed> {
+fn open(data_dir: &Path) -> Result<Feed> {
+    let feed_dir = data_dir.join("feed");
     if !feed_dir.exists() {
         eprintln!("No timetable yet: downloading Warsaw's (about 110 MB, only this once).");
-        download::update(WARSAW_FEED, feed_dir)?;
+        download::update(WARSAW_FEED, &feed_dir)?;
+        eprintln!("Timetable saved in {}", data_dir.display());
     }
     let age = feed_dir
         .metadata()
@@ -183,13 +188,31 @@ fn open(feed_dir: &Path) -> Result<Feed> {
     Feed::open(feed_dir).context("cannot read the timetable; try `odjazd update`")
 }
 
+/// Downloads the timetable at `url`, and reads it for today straight away, so that the
+/// next board need not.
+fn update(url: &str, data_dir: &Path) -> Result<()> {
+    let feed_dir = data_dir.join("feed");
+    download::update(url, &feed_dir)?;
+    let today = today_at(&Feed::open(&feed_dir)?, None)?.date();
+    timetable(data_dir, today).context("cannot read the new timetable")?;
+    eprintln!("Timetable saved in {}", data_dir.display());
+    Ok(())
+}
+
+/// The timetable of the service days around `day`. The first board of the day builds it
+/// from the feed, in about a second, and saves it beside the feed in binary form, which
+/// the next ones read back in milliseconds.
+fn timetable(data_dir: &Path, day: Date) -> Result<Timetable, odjazd_core::Error> {
+    Timetable::load_or_build(&data_dir.join("feed"), &data_dir.join("timetable"), day)
+}
+
 /// The timetable of the service days around `day` and, if `live`, how late the vehicles
 /// on the road are, from their positions downloaded meanwhile. Without those, the times
 /// are the timetable's.
-fn load(feed: &Feed, day: Date, live: bool) -> Result<(Timetable, Option<Realtime>)> {
+fn load(data_dir: &Path, day: Date, live: bool) -> Result<(Timetable, Option<Realtime>)> {
     let (timetable, positions) = thread::scope(|scope| {
         let positions = live.then(|| scope.spawn(live::positions));
-        let timetable = Timetable::build(feed, day);
+        let timetable = timetable(data_dir, day);
         (timetable, positions.map(|download| download.join()))
     });
     let timetable = timetable.context("cannot read the timetable; try `odjazd update`")?;
@@ -223,13 +246,14 @@ fn today_at(feed: &Feed, time: Option<Time>) -> Result<Zoned> {
     })
 }
 
-fn show_board(feed: &Feed, query: &str, args: &BoardArgs) -> Result<()> {
+fn show_board(data_dir: &Path, query: &str, args: &BoardArgs) -> Result<()> {
+    let feed = open(data_dir)?;
     let groups = feed.stop_groups();
     let (group, others) = find(&groups, query)?;
-    let from = today_at(feed, args.at)?;
+    let from = today_at(&feed, args.at)?;
     // Where the vehicles are now says nothing about another time.
     let live = args.at.is_none() && !args.live.offline;
-    let (timetable, realtime) = load(feed, from.date(), live)?;
+    let (timetable, realtime) = load(data_dir, from.date(), live)?;
     let none = Realtime::default();
     let departures = timetable.departures(
         &group.stops,
@@ -250,7 +274,8 @@ fn show_board(feed: &Feed, query: &str, args: &BoardArgs) -> Result<()> {
     Ok(())
 }
 
-fn route(feed: &Feed, args: &RouteArgs) -> Result<()> {
+fn route(data_dir: &Path, args: &RouteArgs) -> Result<()> {
+    let feed = open(data_dir)?;
     let groups = feed.stop_groups();
     let (from, _) = find(&groups, &args.from)?;
     let (to, _) = find(&groups, &args.to)?;
@@ -260,15 +285,16 @@ fn route(feed: &Feed, args: &RouteArgs) -> Result<()> {
             from.name
         );
     }
-    let start = today_at(feed, args.at)?;
+    let start = today_at(&feed, args.at)?;
     let live = args.at.is_none() && !args.live.offline;
-    let (timetable, realtime) = load(feed, start.date(), live)?;
+    let (timetable, realtime) = load(data_dir, start.date(), live)?;
     let none = Realtime::default();
-    let plan = timetable.plan(
-        centre(feed, from),
-        centre(feed, to),
+    let plan = timetable.plan_by(
+        centre(&feed, from),
+        centre(&feed, to),
         start.timestamp(),
         realtime.as_ref().unwrap_or(&none),
+        |journey| render::there(journey, to),
     );
     let out = &mut anstream::stdout().lock();
     render::journeys(out, &timetable, from, to, &start, &plan, args.limit)?;

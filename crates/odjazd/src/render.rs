@@ -24,9 +24,6 @@ const ON_TIME: Style = Style::new().fg_color(Some(Color::Rgb(RgbColor(63, 185, 8
 /// Longer headsigns are cut short with "…".
 const HEADSIGN_WIDTH: usize = 28;
 
-/// Setting off this many minutes later can be worth getting there later, or changing more.
-const LATER: i64 = 5;
-
 /// The next departures from `group`, how late the vehicles tracked in `realtime` run, and
 /// the `others` stops that matched the name too.
 pub fn board(
@@ -120,8 +117,17 @@ pub fn board(
     Ok(())
 }
 
-/// Up to `limit` ways from `from` to `to` setting off at `start`, soonest there first:
-/// each a timeline of walks and rides.
+/// When `journey` gets to `to`: getting off at the stop asked for is getting there,
+/// whichever of its poles it is.
+pub fn there(journey: &Journey, to: &StopGroup) -> Timestamp {
+    match journey.rides().last() {
+        Some(ride) if to.stops.contains(&ride.to) => ride.arrival,
+        _ => journey.arrive,
+    }
+}
+
+/// The first `limit` ways from `from` to `to` setting off at `start`, from a plan made by
+/// when they get [`there`]: each a timeline of walks and rides.
 pub fn journeys(
     out: &mut impl Write,
     timetable: &Timetable,
@@ -140,31 +146,7 @@ pub fn journeys(
         from.name, to.name
     )?;
 
-    // Getting off at the stop asked for is getting there, whichever of its poles it is.
-    let there = |journey: &Journey| match journey.rides().last() {
-        Some(ride) if to.stops.contains(&ride.to) => ride.arrival,
-        _ => journey.arrive,
-    };
-    // The planner leaves out journeys that another one beats on every count, to the second.
-    // Shown to the minute, a journey is not worth it either if another gets there no later
-    // with no more changes, unless it lets you set off a good while later.
-    let beats = |one: &Journey, other: &Journey| {
-        let (one_there, other_there) = (minute(there(one)), minute(there(other)));
-        let (one_leave, other_leave) = (minute(one.leave), minute(other.leave));
-        let (one_changes, other_changes) = (one.transfers(), other.transfers());
-        let no_worse = one_there <= other_there
-            && one_changes <= other_changes
-            && one_leave + LATER > other_leave;
-        no_worse
-            && (one_there < other_there || one_changes < other_changes || one_leave > other_leave)
-    };
-    let all = &plan.options;
-    let mut options: Vec<&Journey> = all
-        .iter()
-        .filter(|journey| !all.iter().any(|other| beats(other, journey)))
-        .collect();
-    options.sort_by_key(|journey| there(journey));
-    options.truncate(limit);
+    let options = &plan.options[..plan.options.len().min(limit)];
     if options.is_empty() {
         writeln!(out)?;
         writeln!(out, "No journey found by public transport.")?;
@@ -174,9 +156,9 @@ pub fn journeys(
     let line_width = width(rides().map(|ride| timetable.route_of(ride.trip).name.as_str()));
     let headsign_width = width(rides().map(|ride| timetable.headsign_of(ride.trip)));
     let tracked = rides().any(|ride| ride.live.is_some());
-    for journey in &options {
+    for journey in options {
         writeln!(out)?;
-        let arrive = there(journey);
+        let arrive = there(journey, to);
         let changes = match journey.transfers() {
             0 => "no changes".to_owned(),
             1 => "1 change".to_owned(),
@@ -420,11 +402,12 @@ mod tests {
         let (dom, praca) = (group("Dom"), group("Praca"));
         let start = at(&feed, MONDAY, 7, 55, 0);
         let none = Realtime::default();
-        let plan = timetable.plan(
+        let plan = timetable.plan_by(
             crate::centre(&feed, dom),
             crate::centre(&feed, praca),
             start.timestamp(),
             &none,
+            |journey| there(journey, praca),
         );
 
         let lines = lines(|out| journeys(out, &timetable, dom, praca, &start, &plan, 3));

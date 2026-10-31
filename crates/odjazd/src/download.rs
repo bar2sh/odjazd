@@ -21,9 +21,7 @@ pub fn update(url: &str, feed_dir: &Path) -> Result<()> {
     let installed =
         odjazd_core::install(&archive, feed_dir).context("the download is not a usable GTFS feed");
     fs::remove_file(&archive)?;
-    installed?;
-    eprintln!("Timetable saved in {}", feed_dir.display());
-    Ok(())
+    installed
 }
 
 fn download(url: &str, to: &Path) -> Result<()> {

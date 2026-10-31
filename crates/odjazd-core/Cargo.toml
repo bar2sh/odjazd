@@ -22,6 +22,14 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2
 # Timetable::to_bytes, from_bytes and load_or_build: a timetable saved in binary form.
 cache = ["dep:rkyv"]
 
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+dirs = "7.0.0"
+
 [[test]]
 name = "cache"
 required-features = ["cache"]
+
+[[bench]]
+name = "warsaw"
+harness = false

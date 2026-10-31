@@ -767,6 +767,9 @@ button.pill { cursor: pointer; min-height: 32px; }
 }
 
 .opt-row .lines { display: inline-flex; gap: 3px; }
+/* On a narrow phone the line breaks after a "·", never inside "1 przesiadka". */
+.opt-row .info > span { white-space: nowrap; }
+.opt-row .leave b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .opt-arrive { text-align: right; white-space: nowrap; }
 .opt-arrive .v { display: block; font: 750 1.05rem var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }

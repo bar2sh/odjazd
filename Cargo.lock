@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "odjazd"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "odjazd-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "csv",
@@ -1538,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "odjazd-wasm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "brotli",
  "brotli-decompressor",
@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "odjazd-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",

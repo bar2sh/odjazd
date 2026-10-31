@@ -50,7 +50,10 @@ const UNREACHED: u32 = u32::MAX;
 /// Ways to get from one point to another.
 #[derive(Debug, Clone)]
 pub struct Plan {
-    /// At most one journey per starting pole, soonest arrival first.
+    /// At most one journey per starting pole, soonest arrival first. Each one offers
+    /// something the others don't, such as a later start or fewer changes: a journey that
+    /// sets off no later than another, arrives no sooner and has no fewer changes is left
+    /// out.
     pub options: Vec<Journey>,
     /// Walking all the way, when that is not too far.
     pub walk: Option<Walk>,
@@ -120,12 +123,22 @@ impl Journey {
             _ => 0,
         }
     }
+
+    /// Whether this journey is the better one whatever you care about: it sets off no
+    /// earlier, arrives no later and changes no more often than `other`, and differs from
+    /// it in at least one of those.
+    fn beats(&self, other: &Journey) -> bool {
+        let mine = (self.leave, self.arrive, self.transfers());
+        let theirs = (other.leave, other.arrive, other.transfers());
+        mine.0 >= theirs.0 && mine.1 <= theirs.1 && mine.2 <= theirs.2 && mine != theirs
+    }
 }
 
 impl Timetable {
     /// The fastest journey from each pole near `from` to `to`, setting off at `at`, using
     /// live delays from `live`. Of journeys arriving within a few minutes of each other,
-    /// the one with fewer changes wins.
+    /// the one with fewer changes wins, and journeys that another one beats on every count
+    /// are left out.
     pub fn plan(&self, from: LatLon, to: LatLon, at: Timestamp, live: &Realtime) -> Plan {
         let direct = from.distance(to);
         let walk = Some(Walk {
@@ -191,6 +204,16 @@ impl Timetable {
             )
         });
         options.dedup_by_key(|journey| journey.rides().next().map(|ride| ride.trip));
+        // Setting off earlier to arrive later, with as many changes, is no choice at all.
+        let beaten: Vec<bool> = options
+            .iter()
+            .map(|journey| options.iter().any(|other| other.beats(journey)))
+            .collect();
+        let mut options: Vec<Journey> = options
+            .into_iter()
+            .zip(beaten)
+            .filter_map(|(journey, beaten)| (!beaten).then_some(journey))
+            .collect();
         options.sort_by_key(|journey| (journey.arrive, journey.transfers(), journey.first_walk()));
         if let Some(best) = options.first().map(|journey| journey.arrive) {
             options.retain(|journey| journey.arrive.as_second() - best.as_second() <= MAX_LATER_S);

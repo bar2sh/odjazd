@@ -45,6 +45,14 @@ pub enum Error {
 
     #[error("invalid GTFS-Realtime data")]
     Realtime(#[from] prost::DecodeError),
+
+    #[cfg(feature = "cache")]
+    #[error("not a timetable saved by this version of odjazd")]
+    BinaryFormat,
+
+    #[cfg(feature = "cache")]
+    #[error("cannot convert the timetable to or from its binary form")]
+    Binary(#[source] rkyv::rancor::Error),
 }
 
 pub(crate) fn invalid(file: &'static str, field: &'static str, value: impl AsRef<[u8]>) -> Error {

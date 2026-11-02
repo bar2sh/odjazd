@@ -36,8 +36,7 @@
   runs. odjazd works that out from each vehicle's GPS position, and leaves out a vehicle
   that has already passed your stop.
 - **Which pole to walk to.** `odjazd route` plans a journey from every pole within walking
-  distance, live delays included, and tells you where to go and when to leave. In the web
-  app, set Home and Work and the plans are one tap away.
+  distance, live delays included, and tells you where to go and when to leave.
 - **In the browser, too.** On the [map page](https://bar2sh.github.io/odjazd/), pick a
   pole and its departures come up, worked out in your browser by the same engine compiled
   to WebAssembly.
@@ -131,29 +130,7 @@ the amber board. No server works them out: `odjazd-core` runs in your browser, c
 to WebAssembly, on a timetable that GitHub Actions builds every night. Yesterday, today
 and tomorrow come in one file of 2–3.5 MB, saved in binary form with
 [rkyv](https://rkyv.org), which a laptop loads in under half a second. The page goes by
-the timetable alone; for live delays, use the command line or the web app.
-
-## Web app
-
-`odjazd-web` puts the same engine on your phone. It finds the poles nearest to you, each
-on its own (Świętokrzyska 01, 02, 03…), shows what leaves from each with live delays,
-and, once you have set Home or Work, tells you which pole to walk to and when to leave.
-It installs as an app (PWA).
-
-```bash
-cargo run --release -p odjazd-web     # then open http://localhost:8080
-```
-
-The server downloads the timetable on its first start, or reuses the one `odjazd update`
-fetched, and refreshes it every night. Browsers share your location only with pages
-served over HTTPS (or from localhost), so to use it on a phone, host it behind HTTPS: the
-[Dockerfile](Dockerfile) builds a small container that runs anywhere. The JSON API is
-described in [`crates/odjazd-web/API.md`](crates/odjazd-web/API.md).
-
-The map shows OpenStreetMap's own tiles, which is fine for trying it out. Their
-[tile usage policy](https://operations.osmfoundation.org/policies/tiles/) is not meant
-for an app many people use, so before putting it online, point `TILES` in
-[`web/map.js`](crates/odjazd-web/web/map.js) at a tile provider of your own.
+the timetable alone; for live delays, use the command line.
 
 ## How it works
 
@@ -168,18 +145,6 @@ flowchart TB
     tables -->|"once a day, in about a second"| saved[("three days of trips<br/>saved with rkyv, about 30 MB")]
     saved -->|read back in 27 ms| answer["boards and journeys"]
     gps["vehicle positions, every 10–20 s"] -->|how late each trip runs| answer
-```
-
-The web app keeps the same timetable in memory, and follows the vehicles as they go:
-
-```mermaid
-flowchart LR
-    feed["GTFS feed<br/>every night"] --> tt[("3 days of trips<br/>in memory")]
-    gps["vehicle positions<br/>every 15 s"] --> delays["how late<br/>each trip runs"]
-    tt --> delays
-    tt --> api["JSON API<br/>poles · departures · plans"]
-    delays --> api
-    api --> pwa["web app<br/>on your phone"]
 ```
 
 A few details make this harder than it looks:
@@ -228,13 +193,12 @@ On an Apple M-series laptop, with Warsaw's timetable for 8:15 on a Monday:
 downloaded. The vehicles are put where the timetable says they are, so the numbers do not
 depend on when it runs.
 
-The code is split into four crates, the map page and the task that builds it:
+The code is split into three crates, the map page and the task that builds it:
 
 | Part | What it does |
 |---|---|
 | [`odjazd-core`](crates/odjazd-core) | GTFS and GTFS-Realtime parsing, stop search, departures, live delays, journey planning, and the timetable in binary form. No networking or terminal I/O, so it can be compiled to WebAssembly. |
 | [`odjazd`](crates/odjazd) | The command-line app: downloading, arguments, colours, journeys and the live board. |
-| [`odjazd-web`](crates/odjazd-web) | The web app and its JSON API: keeps the timetable fresh, follows vehicle positions, serves the PWA. |
 | [`odjazd-wasm`](crates/odjazd-wasm) | odjazd-core for the browser, through wasm-bindgen: stop search, boards and every pole for the map, from the timetable in binary form. |
 | [`site`](site) | The map page: HTML, CSS and JavaScript around odjazd-wasm, with a MapLibre map. |
 | [`xtask`](xtask) | `cargo xtask site`, which builds the map page and the timetable it loads. |
@@ -243,8 +207,7 @@ Built with [clap](https://crates.io/crates/clap), [csv](https://crates.io/crates
 [serde](https://serde.rs), [jiff](https://crates.io/crates/jiff), [rkyv](https://rkyv.org),
 [ratatui](https://ratatui.rs), [ureq](https://crates.io/crates/ureq),
 [zip](https://crates.io/crates/zip), [anstream](https://crates.io/crates/anstream) and
-[prost](https://crates.io/crates/prost); the web app with [axum](https://crates.io/crates/axum)
-on [tokio](https://tokio.rs), and [Leaflet](https://leafletjs.com) for its map; the map page with
+[prost](https://crates.io/crates/prost); the map page with
 [wasm-bindgen](https://crates.io/crates/wasm-bindgen) and [MapLibre GL JS](https://maplibre.org).
 
 ## Development
